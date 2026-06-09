@@ -1,0 +1,34 @@
+cc_library_static {
+    name: "libLLVM22TableGenGlobalISel",
+    defaults: ["llvm22-defaults-no-generated-headers"],
+    header_libs: ["llvm22-headers"],
+    srcs: ["*.cpp"],
+
+    static_libs: [
+        "libLLVM22Support",
+    ],
+
+    host_ldlibs: ["-lm"],
+    target: {
+        windows: {
+            enabled: false,
+        },
+        // llvm22-defaults turns off host builds by default, turn it back on for
+        // modules that are used to build llvm22-tblgen
+        host: {
+            enabled: true,
+        },
+        darwin: {
+            host_ldlibs: [
+                "-lpthread",
+                "-ldl",
+            ],
+        },
+        linux: {
+            host_ldlibs: [
+                "-lpthread",
+                "-ldl",
+            ],
+        },
+    },
+}

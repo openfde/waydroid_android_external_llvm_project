@@ -1,7 +1,0 @@
-cc_library_static {
-    name: "libLLVM17HelloNew",
-    defaults: [
-        "llvm17-lib-defaults",
-    ],
-    srcs: ["*.cpp"],
-}

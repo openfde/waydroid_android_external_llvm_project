@@ -1,4 +1,4 @@
-//===--- LexerUtils.h - clang-tidy-------------------------------*- C++ -*-===//
+//===----------------------------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -6,13 +6,14 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_CLANG_TOOLS_EXTRA_CLANG_TIDY_UTILS_LEXER_UTILS_H
-#define LLVM_CLANG_TOOLS_EXTRA_CLANG_TIDY_UTILS_LEXER_UTILS_H
+#ifndef LLVM_CLANG_TOOLS_EXTRA_CLANG_TIDY_UTILS_LEXERUTILS_H
+#define LLVM_CLANG_TOOLS_EXTRA_CLANG_TIDY_UTILS_LEXERUTILS_H
 
 #include "clang/AST/ASTContext.h"
 #include "clang/Basic/TokenKinds.h"
 #include "clang/Lex/Lexer.h"
 #include <optional>
+#include <utility>
 
 namespace clang {
 
@@ -23,6 +24,9 @@ namespace tidy::utils::lexer {
 /// Returns previous token or ``tok::unknown`` if not found.
 Token getPreviousToken(SourceLocation Location, const SourceManager &SM,
                        const LangOptions &LangOpts, bool SkipComments = true);
+std::pair<Token, SourceLocation>
+getPreviousTokenAndStart(SourceLocation Location, const SourceManager &SM,
+                         const LangOptions &LangOpts, bool SkipComments = true);
 
 SourceLocation findPreviousTokenStart(SourceLocation Start,
                                       const SourceManager &SM,
@@ -42,16 +46,16 @@ SourceLocation findPreviousAnyTokenKind(SourceLocation Start,
                                         const LangOptions &LangOpts,
                                         TokenKind TK, TokenKinds... TKs) {
   if (Start.isInvalid() || Start.isMacroID())
-    return SourceLocation();
+    return {};
   while (true) {
-    SourceLocation L = findPreviousTokenStart(Start, SM, LangOpts);
+    const SourceLocation L = findPreviousTokenStart(Start, SM, LangOpts);
     if (L.isInvalid() || L.isMacroID())
-      return SourceLocation();
+      return {};
 
     Token T;
     // Returning 'true' is used to signal failure to retrieve the token.
     if (Lexer::getRawToken(L, T, SM, LangOpts, /*IgnoreWhiteSpace=*/true))
-      return SourceLocation();
+      return {};
 
     if (T.isOneOf(TK, TKs...))
       return T.getLocation();
@@ -70,9 +74,9 @@ SourceLocation findNextAnyTokenKind(SourceLocation Start,
         Lexer::findNextToken(Start, SM, LangOpts);
 
     if (!CurrentToken)
-      return SourceLocation();
+      return {};
 
-    Token PotentialMatch = *CurrentToken;
+    const Token PotentialMatch = *CurrentToken;
     if (PotentialMatch.isOneOf(TK, TKs...))
       return PotentialMatch.getLocation();
 
@@ -80,19 +84,24 @@ SourceLocation findNextAnyTokenKind(SourceLocation Start,
     // the loop, otherwise we will get infinite loop (findNextToken will return
     // eof on eof).
     if (PotentialMatch.is(tok::eof))
-      return SourceLocation();
+      return {};
     Start = PotentialMatch.getLastLoc();
   }
 }
 
-std::optional<Token>
+// Finds next token, possibly a comment.
+inline std::optional<Token>
 findNextTokenIncludingComments(SourceLocation Start, const SourceManager &SM,
-                               const LangOptions &LangOpts);
+                               const LangOptions &LangOpts) {
+  return Lexer::findNextToken(Start, SM, LangOpts, true);
+}
 
 // Finds next token that's not a comment.
-std::optional<Token> findNextTokenSkippingComments(SourceLocation Start,
-                                                   const SourceManager &SM,
-                                                   const LangOptions &LangOpts);
+inline std::optional<Token>
+findNextTokenSkippingComments(SourceLocation Start, const SourceManager &SM,
+                              const LangOptions &LangOpts) {
+  return Lexer::findNextToken(Start, SM, LangOpts, false);
+}
 
 /// Re-lex the provide \p Range and return \c false if either a macro spans
 /// multiple tokens, a pre-processor directive or failure to retrieve the
@@ -124,4 +133,4 @@ SourceLocation getLocationForNoexceptSpecifier(const FunctionDecl *FuncDecl,
 } // namespace tidy::utils::lexer
 } // namespace clang
 
-#endif // LLVM_CLANG_TOOLS_EXTRA_CLANG_TIDY_UTILS_LEXER_UTILS_H
+#endif // LLVM_CLANG_TOOLS_EXTRA_CLANG_TIDY_UTILS_LEXERUTILS_H

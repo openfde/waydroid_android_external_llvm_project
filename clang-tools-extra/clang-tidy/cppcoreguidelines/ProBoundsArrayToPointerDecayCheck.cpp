@@ -1,4 +1,4 @@
-//===--- ProBoundsArrayToPointerDecayCheck.cpp - clang-tidy----------------===//
+//===----------------------------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -10,6 +10,7 @@
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/ParentMapContext.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
+#include "clang/ASTMatchers/ASTMatchers.h"
 
 using namespace clang::ast_matchers;
 
@@ -18,10 +19,11 @@ namespace clang::tidy::cppcoreguidelines {
 namespace {
 AST_MATCHER_P(CXXForRangeStmt, hasRangeBeginEndStmt,
               ast_matchers::internal::Matcher<DeclStmt>, InnerMatcher) {
-  for (const DeclStmt *Stmt : {Node.getBeginStmt(), Node.getEndStmt()})
-    if (Stmt != nullptr && InnerMatcher.matches(*Stmt, Finder, Builder))
-      return true;
-  return false;
+  return llvm::any_of(llvm::ArrayRef{Node.getBeginStmt(), Node.getEndStmt()},
+                      [&](const DeclStmt *Stmt) {
+                        return Stmt &&
+                               InnerMatcher.matches(*Stmt, Finder, Builder);
+                      });
 }
 
 AST_MATCHER(Stmt, isInsideOfRangeBeginEndStmt) {
@@ -34,7 +36,7 @@ AST_MATCHER_P(Expr, hasParentIgnoringImpCasts,
               ast_matchers::internal::Matcher<Expr>, InnerMatcher) {
   const Expr *E = &Node;
   do {
-    DynTypedNodeList Parents = Finder->getASTContext().getParents(*E);
+    const DynTypedNodeList Parents = Finder->getASTContext().getParents(*E);
     if (Parents.size() != 1)
       return false;
     E = Parents[0].get<Expr>();
@@ -56,6 +58,7 @@ void ProBoundsArrayToPointerDecayCheck::registerMatchers(MatchFinder *Finder) {
           TK_AsIs,
           implicitCastExpr(
               unless(hasParent(arraySubscriptExpr())),
+              unless(hasSourceExpression(predefinedExpr())),
               unless(hasParentIgnoringImpCasts(explicitCastExpr())),
               unless(isInsideOfRangeBeginEndStmt()),
               unless(hasSourceExpression(ignoringParens(stringLiteral()))),

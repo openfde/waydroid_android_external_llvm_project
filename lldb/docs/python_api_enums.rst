@@ -321,6 +321,7 @@ Format
 .. py:data:: eFormatInstruction
 .. py:data:: eFormatVoid
 .. py:data:: eFormatUnicode8
+.. py:data:: eFormatFloat128
 
 
 .. _DescriptionLevel:
@@ -504,7 +505,7 @@ ValueType
 
 .. py:data:: eValueTypeVariableArgument
 
-   Funfction argument variable.
+   Function argument variable.
 
 .. py:data:: eValueTypeVariableLocal
 
@@ -1045,6 +1046,7 @@ BasicType
 .. py:data:: eBasicTypeObjCSel
 .. py:data:: eBasicTypeNullPtr
 .. py:data:: eBasicTypeOther
+.. py:data:: eBasicTypeFloat128
 
 
 .. _TraceType:

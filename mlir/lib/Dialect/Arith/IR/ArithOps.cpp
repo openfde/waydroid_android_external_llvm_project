@@ -13,6 +13,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/CommonFolders.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributeInterfaces.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -20,11 +21,13 @@
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/TypeUtilities.h"
+#include "mlir/Support/LogicalResult.h"
 
+#include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/APSInt.h"
+#include "llvm/ADT/FloatingPointMode.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 
@@ -38,26 +41,34 @@ using namespace mlir::arith;
 static IntegerAttr
 applyToIntegerAttrs(PatternRewriter &builder, Value res, Attribute lhs,
                     Attribute rhs,
-                    function_ref<int64_t(int64_t, int64_t)> binFn) {
-  return builder.getIntegerAttr(res.getType(),
-                                binFn(llvm::cast<IntegerAttr>(lhs).getInt(),
-                                      llvm::cast<IntegerAttr>(rhs).getInt()));
+                    function_ref<APInt(const APInt &, const APInt &)> binFn) {
+  APInt lhsVal = llvm::cast<IntegerAttr>(lhs).getValue();
+  APInt rhsVal = llvm::cast<IntegerAttr>(rhs).getValue();
+  APInt value = binFn(lhsVal, rhsVal);
+  return IntegerAttr::get(res.getType(), value);
 }
 
 static IntegerAttr addIntegerAttrs(PatternRewriter &builder, Value res,
                                    Attribute lhs, Attribute rhs) {
-  return applyToIntegerAttrs(builder, res, lhs, rhs, std::plus<int64_t>());
+  return applyToIntegerAttrs(builder, res, lhs, rhs, std::plus<APInt>());
 }
 
 static IntegerAttr subIntegerAttrs(PatternRewriter &builder, Value res,
                                    Attribute lhs, Attribute rhs) {
-  return applyToIntegerAttrs(builder, res, lhs, rhs, std::minus<int64_t>());
+  return applyToIntegerAttrs(builder, res, lhs, rhs, std::minus<APInt>());
 }
 
 static IntegerAttr mulIntegerAttrs(PatternRewriter &builder, Value res,
                                    Attribute lhs, Attribute rhs) {
-  return applyToIntegerAttrs(builder, res, lhs, rhs,
-                             std::multiplies<int64_t>());
+  return applyToIntegerAttrs(builder, res, lhs, rhs, std::multiplies<APInt>());
+}
+
+// Merge overflow flags from 2 ops, selecting the most conservative combination.
+static IntegerOverflowFlagsAttr
+mergeOverflowFlags(IntegerOverflowFlagsAttr val1,
+                   IntegerOverflowFlagsAttr val2) {
+  return IntegerOverflowFlagsAttr::get(val1.getContext(),
+                                       val1.getValue() & val2.getValue());
 }
 
 /// Invert an integer comparison predicate.
@@ -87,6 +98,29 @@ arith::CmpIPredicate arith::invertPredicate(arith::CmpIPredicate pred) {
   llvm_unreachable("unknown cmpi predicate kind");
 }
 
+/// Equivalent to
+/// convertRoundingModeToLLVM(convertArithRoundingModeToLLVM(roundingMode)).
+///
+/// Not possible to implement as chain of calls as this would introduce a
+/// circular dependency with MLIRArithAttrToLLVMConversion and make arith depend
+/// on the LLVM dialect and on translation to LLVM.
+static llvm::RoundingMode
+convertArithRoundingModeToLLVMIR(RoundingMode roundingMode) {
+  switch (roundingMode) {
+  case RoundingMode::downward:
+    return llvm::RoundingMode::TowardNegative;
+  case RoundingMode::to_nearest_away:
+    return llvm::RoundingMode::NearestTiesToAway;
+  case RoundingMode::to_nearest_even:
+    return llvm::RoundingMode::NearestTiesToEven;
+  case RoundingMode::toward_zero:
+    return llvm::RoundingMode::TowardZero;
+  case RoundingMode::upward:
+    return llvm::RoundingMode::TowardPositive;
+  }
+  llvm_unreachable("Unhandled rounding mode");
+}
+
 static arith::CmpIPredicateAttr invertPredicate(arith::CmpIPredicateAttr pred) {
   return arith::CmpIPredicateAttr::get(pred.getContext(),
                                        invertPredicate(pred.getValue()));
@@ -105,14 +139,19 @@ static int64_t getScalarOrElementWidth(Value value) {
 }
 
 static FailureOr<APInt> getIntOrSplatIntValue(Attribute attr) {
-  if (auto intAttr = llvm::dyn_cast<IntegerAttr>(attr))
-    return intAttr.getValue();
-
-  if (auto splatAttr = llvm::dyn_cast<SplatElementsAttr>(attr))
-    if (llvm::isa<IntegerType>(splatAttr.getElementType()))
-      return splatAttr.getSplatValue<APInt>();
+  APInt value;
+  if (matchPattern(attr, m_ConstantInt(&value)))
+    return value;
 
   return failure();
+}
+
+static Attribute getBoolAttribute(Type type, bool value) {
+  auto boolAttr = BoolAttr::get(type.getContext(), value);
+  ShapedType shapedType = dyn_cast_or_null<ShapedType>(type);
+  if (!shapedType)
+    return boolAttr;
+  return DenseElementsAttr::get(shapedType, boolAttr);
 }
 
 //===----------------------------------------------------------------------===//
@@ -130,7 +169,7 @@ namespace {
 /// Return the type of the same shape (scalar, vector or tensor) containing i1.
 static Type getI1SameShape(Type type) {
   auto i1Type = IntegerType::get(type.getContext(), 1);
-  if (auto shapedType = llvm::dyn_cast<ShapedType>(type))
+  if (auto shapedType = dyn_cast<ShapedType>(type))
     return shapedType.cloneWith(std::nullopt, i1Type);
   if (llvm::isa<UnrankedTensorType>(type))
     return UnrankedTensorType::get(i1Type);
@@ -144,8 +183,8 @@ static Type getI1SameShape(Type type) {
 void arith::ConstantOp::getAsmResultNames(
     function_ref<void(Value, StringRef)> setNameFn) {
   auto type = getType();
-  if (auto intCst = llvm::dyn_cast<IntegerAttr>(getValue())) {
-    auto intType = llvm::dyn_cast<IntegerType>(type);
+  if (auto intCst = dyn_cast<IntegerAttr>(getValue())) {
+    auto intType = dyn_cast<IntegerType>(type);
 
     // Sugar i1 constants with 'true' and 'false'.
     if (intType && intType.getWidth() == 1)
@@ -167,11 +206,6 @@ void arith::ConstantOp::getAsmResultNames(
 /// or float like.
 LogicalResult arith::ConstantOp::verify() {
   auto type = getType();
-  // The value's type must match the return type.
-  if (getValue().getType() != type) {
-    return emitOpError() << "value type " << getValue().getType()
-                         << " must match return type: " << type;
-  }
   // Integer values must be signless.
   if (llvm::isa<IntegerType>(type) &&
       !llvm::cast<IntegerType>(type).isSignless())
@@ -181,12 +215,20 @@ LogicalResult arith::ConstantOp::verify() {
     return emitOpError(
         "value must be an integer, float, or elements attribute");
   }
+
+  // Note, we could relax this for vectors with 1 scalable dim, e.g.:
+  //  * arith.constant dense<[[3, 3], [1, 1]]> : vector<2 x [2] x i32>
+  // However, this would most likely require updating the lowerings to LLVM.
+  if (isa<ScalableVectorType>(type) && !isa<SplatElementsAttr>(getValue()))
+    return emitOpError(
+        "intializing scalable vectors with elements attribute is not supported"
+        " unless it's a vector splat");
   return success();
 }
 
 bool arith::ConstantOp::isBuildableWith(Attribute value, Type type) {
   // The value's type must be the same as the provided type.
-  auto typedAttr = llvm::dyn_cast<TypedAttr>(value);
+  auto typedAttr = dyn_cast<TypedAttr>(value);
   if (!typedAttr || typedAttr.getType() != type)
     return false;
   // Integer values must be signless.
@@ -200,7 +242,7 @@ bool arith::ConstantOp::isBuildableWith(Attribute value, Type type) {
 ConstantOp arith::ConstantOp::materialize(OpBuilder &builder, Attribute value,
                                           Type type, Location loc) {
   if (isBuildableWith(value, type))
-    return builder.create<arith::ConstantOp>(loc, cast<TypedAttr>(value));
+    return arith::ConstantOp::create(builder, loc, cast<TypedAttr>(value));
   return nullptr;
 }
 
@@ -213,12 +255,64 @@ void arith::ConstantIntOp::build(OpBuilder &builder, OperationState &result,
                            builder.getIntegerAttr(type, value));
 }
 
+arith::ConstantIntOp arith::ConstantIntOp::create(OpBuilder &builder,
+                                                  Location location,
+                                                  int64_t value,
+                                                  unsigned width) {
+  mlir::OperationState state(location, getOperationName());
+  build(builder, state, value, width);
+  auto result = dyn_cast<ConstantIntOp>(builder.create(state));
+  assert(result && "builder didn't return the right type");
+  return result;
+}
+
+arith::ConstantIntOp arith::ConstantIntOp::create(ImplicitLocOpBuilder &builder,
+                                                  int64_t value,
+                                                  unsigned width) {
+  return create(builder, builder.getLoc(), value, width);
+}
+
 void arith::ConstantIntOp::build(OpBuilder &builder, OperationState &result,
-                                 int64_t value, Type type) {
-  assert(type.isSignlessInteger() &&
-         "ConstantIntOp can only have signless integer type values");
+                                 Type type, int64_t value) {
   arith::ConstantOp::build(builder, result, type,
                            builder.getIntegerAttr(type, value));
+}
+
+arith::ConstantIntOp arith::ConstantIntOp::create(OpBuilder &builder,
+                                                  Location location, Type type,
+                                                  int64_t value) {
+  mlir::OperationState state(location, getOperationName());
+  build(builder, state, type, value);
+  auto result = dyn_cast<ConstantIntOp>(builder.create(state));
+  assert(result && "builder didn't return the right type");
+  return result;
+}
+
+arith::ConstantIntOp arith::ConstantIntOp::create(ImplicitLocOpBuilder &builder,
+                                                  Type type, int64_t value) {
+  return create(builder, builder.getLoc(), type, value);
+}
+
+void arith::ConstantIntOp::build(OpBuilder &builder, OperationState &result,
+                                 Type type, const APInt &value) {
+  arith::ConstantOp::build(builder, result, type,
+                           builder.getIntegerAttr(type, value));
+}
+
+arith::ConstantIntOp arith::ConstantIntOp::create(OpBuilder &builder,
+                                                  Location location, Type type,
+                                                  const APInt &value) {
+  mlir::OperationState state(location, getOperationName());
+  build(builder, state, type, value);
+  auto result = dyn_cast<ConstantIntOp>(builder.create(state));
+  assert(result && "builder didn't return the right type");
+  return result;
+}
+
+arith::ConstantIntOp arith::ConstantIntOp::create(ImplicitLocOpBuilder &builder,
+                                                  Type type,
+                                                  const APInt &value) {
+  return create(builder, builder.getLoc(), type, value);
 }
 
 bool arith::ConstantIntOp::classof(Operation *op) {
@@ -228,9 +322,26 @@ bool arith::ConstantIntOp::classof(Operation *op) {
 }
 
 void arith::ConstantFloatOp::build(OpBuilder &builder, OperationState &result,
-                                   const APFloat &value, FloatType type) {
+                                   FloatType type, const APFloat &value) {
   arith::ConstantOp::build(builder, result, type,
                            builder.getFloatAttr(type, value));
+}
+
+arith::ConstantFloatOp arith::ConstantFloatOp::create(OpBuilder &builder,
+                                                      Location location,
+                                                      FloatType type,
+                                                      const APFloat &value) {
+  mlir::OperationState state(location, getOperationName());
+  build(builder, state, type, value);
+  auto result = dyn_cast<ConstantFloatOp>(builder.create(state));
+  assert(result && "builder didn't return the right type");
+  return result;
+}
+
+arith::ConstantFloatOp
+arith::ConstantFloatOp::create(ImplicitLocOpBuilder &builder, FloatType type,
+                               const APFloat &value) {
+  return create(builder, builder.getLoc(), type, value);
 }
 
 bool arith::ConstantFloatOp::classof(Operation *op) {
@@ -245,10 +356,35 @@ void arith::ConstantIndexOp::build(OpBuilder &builder, OperationState &result,
                            builder.getIndexAttr(value));
 }
 
+arith::ConstantIndexOp arith::ConstantIndexOp::create(OpBuilder &builder,
+                                                      Location location,
+                                                      int64_t value) {
+  mlir::OperationState state(location, getOperationName());
+  build(builder, state, value);
+  auto result = dyn_cast<ConstantIndexOp>(builder.create(state));
+  assert(result && "builder didn't return the right type");
+  return result;
+}
+
+arith::ConstantIndexOp
+arith::ConstantIndexOp::create(ImplicitLocOpBuilder &builder, int64_t value) {
+  return create(builder, builder.getLoc(), value);
+}
+
 bool arith::ConstantIndexOp::classof(Operation *op) {
   if (auto constOp = dyn_cast_or_null<arith::ConstantOp>(op))
     return constOp.getType().isIndex();
   return false;
+}
+
+Value mlir::arith::getZeroConstant(OpBuilder &builder, Location loc,
+                                   Type type) {
+  // TODO: Incorporate this check to `FloatAttr::get*`.
+  assert(!isa<Float8E8M0FNUType>(getElementTypeOrSelf(type)) &&
+         "type doesn't have a zero representation");
+  TypedAttr zeroAttr = builder.getZeroAttr(type);
+  assert(zeroAttr && "unsupported type for zero attribute");
+  return arith::ConstantOp::create(builder, loc, zeroAttr);
 }
 
 //===----------------------------------------------------------------------===//
@@ -257,7 +393,7 @@ bool arith::ConstantIndexOp::classof(Operation *op) {
 
 OpFoldResult arith::AddIOp::fold(FoldAdaptor adaptor) {
   // addi(x, 0) -> x
-  if (matchPattern(getRhs(), m_Zero()))
+  if (matchPattern(adaptor.getRhs(), m_Zero()))
     return getLhs();
 
   // addi(subi(a, b), b) -> a
@@ -287,7 +423,7 @@ void arith::AddIOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
 
 std::optional<SmallVector<int64_t, 4>>
 arith::AddUIExtendedOp::getShapeForUnroll() {
-  if (auto vt = llvm::dyn_cast<VectorType>(getType(0)))
+  if (auto vt = dyn_cast<VectorType>(getType(0)))
     return llvm::to_vector<4>(vt.getShape());
   return std::nullopt;
 }
@@ -345,10 +481,14 @@ void arith::AddUIExtendedOp::getCanonicalizationPatterns(
 
 OpFoldResult arith::SubIOp::fold(FoldAdaptor adaptor) {
   // subi(x,x) -> 0
-  if (getOperand(0) == getOperand(1))
-    return Builder(getContext()).getZeroAttr(getType());
+  if (getOperand(0) == getOperand(1)) {
+    auto shapedType = dyn_cast<ShapedType>(getType());
+    // We can't generate a constant with a dynamic shaped tensor.
+    if (!shapedType || shapedType.hasStaticShape())
+      return Builder(getContext()).getZeroAttr(getType());
+  }
   // subi(x,0) -> x
-  if (matchPattern(getRhs(), m_Zero()))
+  if (matchPattern(adaptor.getRhs(), m_Zero()))
     return getLhs();
 
   if (auto add = getLhs().getDefiningOp<AddIOp>()) {
@@ -378,17 +518,44 @@ void arith::SubIOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
 
 OpFoldResult arith::MulIOp::fold(FoldAdaptor adaptor) {
   // muli(x, 0) -> 0
-  if (matchPattern(getRhs(), m_Zero()))
+  if (matchPattern(adaptor.getRhs(), m_Zero()))
     return getRhs();
   // muli(x, 1) -> x
-  if (matchPattern(getRhs(), m_One()))
-    return getOperand(0);
+  if (matchPattern(adaptor.getRhs(), m_One()))
+    return getLhs();
   // TODO: Handle the overflow case.
 
   // default folder
   return constFoldBinaryOp<IntegerAttr>(
       adaptor.getOperands(),
       [](const APInt &a, const APInt &b) { return a * b; });
+}
+
+void arith::MulIOp::getAsmResultNames(
+    function_ref<void(Value, StringRef)> setNameFn) {
+  if (!isa<IndexType>(getType()))
+    return;
+
+  // Match vector.vscale by name to avoid depending on the vector dialect (which
+  // is a circular dependency).
+  auto isVscale = [](Operation *op) {
+    return op && op->getName().getStringRef() == "vector.vscale";
+  };
+
+  IntegerAttr baseValue;
+  auto isVscaleExpr = [&](Value a, Value b) {
+    return matchPattern(a, m_Constant(&baseValue)) &&
+           isVscale(b.getDefiningOp());
+  };
+
+  if (!isVscaleExpr(getLhs(), getRhs()) && !isVscaleExpr(getRhs(), getLhs()))
+    return;
+
+  // Name `base * vscale` or `vscale * base` as `c<base_value>_vscale`.
+  SmallString<32> specialNameBuffer;
+  llvm::raw_svector_ostream specialName(specialNameBuffer);
+  specialName << 'c' << baseValue.getInt() << "_vscale";
+  setNameFn(getResult(), specialName.str());
 }
 
 void arith::MulIOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
@@ -402,7 +569,7 @@ void arith::MulIOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
 
 std::optional<SmallVector<int64_t, 4>>
 arith::MulSIExtendedOp::getShapeForUnroll() {
-  if (auto vt = llvm::dyn_cast<VectorType>(getType(0)))
+  if (auto vt = dyn_cast<VectorType>(getType(0)))
     return llvm::to_vector<4>(vt.getShape());
   return std::nullopt;
 }
@@ -411,7 +578,7 @@ LogicalResult
 arith::MulSIExtendedOp::fold(FoldAdaptor adaptor,
                              SmallVectorImpl<OpFoldResult> &results) {
   // mulsi_extended(x, 0) -> 0, 0
-  if (matchPattern(getRhs(), m_Zero())) {
+  if (matchPattern(adaptor.getRhs(), m_Zero())) {
     Attribute zero = adaptor.getRhs();
     results.push_back(zero);
     results.push_back(zero);
@@ -425,9 +592,7 @@ arith::MulSIExtendedOp::fold(FoldAdaptor adaptor,
     // Invoke the constant fold helper again to calculate the 'high' result.
     Attribute highAttr = constFoldBinaryOp<IntegerAttr>(
         adaptor.getOperands(), [](const APInt &a, const APInt &b) {
-          unsigned bitWidth = a.getBitWidth();
-          APInt fullProduct = a.sext(bitWidth * 2) * b.sext(bitWidth * 2);
-          return fullProduct.extractBits(bitWidth, bitWidth);
+          return llvm::APIntOps::mulhs(a, b);
         });
     assert(highAttr && "Unexpected constant-folding failure");
 
@@ -450,7 +615,7 @@ void arith::MulSIExtendedOp::getCanonicalizationPatterns(
 
 std::optional<SmallVector<int64_t, 4>>
 arith::MulUIExtendedOp::getShapeForUnroll() {
-  if (auto vt = llvm::dyn_cast<VectorType>(getType(0)))
+  if (auto vt = dyn_cast<VectorType>(getType(0)))
     return llvm::to_vector<4>(vt.getShape());
   return std::nullopt;
 }
@@ -459,7 +624,7 @@ LogicalResult
 arith::MulUIExtendedOp::fold(FoldAdaptor adaptor,
                              SmallVectorImpl<OpFoldResult> &results) {
   // mului_extended(x, 0) -> 0, 0
-  if (matchPattern(getRhs(), m_Zero())) {
+  if (matchPattern(adaptor.getRhs(), m_Zero())) {
     Attribute zero = adaptor.getRhs();
     results.push_back(zero);
     results.push_back(zero);
@@ -467,7 +632,7 @@ arith::MulUIExtendedOp::fold(FoldAdaptor adaptor,
   }
 
   // mului_extended(x, 1) -> x, 0
-  if (matchPattern(getRhs(), m_One())) {
+  if (matchPattern(adaptor.getRhs(), m_One())) {
     Builder builder(getContext());
     Attribute zero = builder.getZeroAttr(getLhs().getType());
     results.push_back(getLhs());
@@ -482,9 +647,7 @@ arith::MulUIExtendedOp::fold(FoldAdaptor adaptor,
     // Invoke the constant fold helper again to calculate the 'high' result.
     Attribute highAttr = constFoldBinaryOp<IntegerAttr>(
         adaptor.getOperands(), [](const APInt &a, const APInt &b) {
-          unsigned bitWidth = a.getBitWidth();
-          APInt fullProduct = a.zext(bitWidth * 2) * b.zext(bitWidth * 2);
-          return fullProduct.extractBits(bitWidth, bitWidth);
+          return llvm::APIntOps::mulhu(a, b);
         });
     assert(highAttr && "Unexpected constant-folding failure");
 
@@ -505,10 +668,30 @@ void arith::MulUIExtendedOp::getCanonicalizationPatterns(
 // DivUIOp
 //===----------------------------------------------------------------------===//
 
+/// Fold `(a * b) / b -> a`
+static Value foldDivMul(Value lhs, Value rhs,
+                        arith::IntegerOverflowFlags ovfFlags) {
+  auto mul = lhs.getDefiningOp<mlir::arith::MulIOp>();
+  if (!mul || !bitEnumContainsAll(mul.getOverflowFlags(), ovfFlags))
+    return {};
+
+  if (mul.getLhs() == rhs)
+    return mul.getRhs();
+
+  if (mul.getRhs() == rhs)
+    return mul.getLhs();
+
+  return {};
+}
+
 OpFoldResult arith::DivUIOp::fold(FoldAdaptor adaptor) {
   // divui (x, 1) -> x.
-  if (matchPattern(getRhs(), m_One()))
+  if (matchPattern(adaptor.getRhs(), m_One()))
     return getLhs();
+
+  // (a * b) / b -> a
+  if (Value val = foldDivMul(getLhs(), getRhs(), IntegerOverflowFlags::nuw))
+    return val;
 
   // Don't fold if it would require a division by zero.
   bool div0 = false;
@@ -524,10 +707,17 @@ OpFoldResult arith::DivUIOp::fold(FoldAdaptor adaptor) {
   return div0 ? Attribute() : result;
 }
 
-Speculation::Speculatability arith::DivUIOp::getSpeculatability() {
+/// Returns whether an unsigned division by `divisor` is speculatable.
+static Speculation::Speculatability getDivUISpeculatability(Value divisor) {
   // X / 0 => UB
-  return matchPattern(getRhs(), m_NonZero()) ? Speculation::Speculatable
-                                             : Speculation::NotSpeculatable;
+  if (matchPattern(divisor, m_IntRangeWithoutZeroU()))
+    return Speculation::Speculatable;
+
+  return Speculation::NotSpeculatable;
+}
+
+Speculation::Speculatability arith::DivUIOp::getSpeculatability() {
+  return getDivUISpeculatability(getRhs());
 }
 
 //===----------------------------------------------------------------------===//
@@ -536,8 +726,12 @@ Speculation::Speculatability arith::DivUIOp::getSpeculatability() {
 
 OpFoldResult arith::DivSIOp::fold(FoldAdaptor adaptor) {
   // divsi (x, 1) -> x.
-  if (matchPattern(getRhs(), m_One()))
+  if (matchPattern(adaptor.getRhs(), m_One()))
     return getLhs();
+
+  // (a * b) / b -> a
+  if (Value val = foldDivMul(getLhs(), getRhs(), IntegerOverflowFlags::nsw))
+    return val;
 
   // Don't fold if it would overflow or if it requires a division by zero.
   bool overflowOrDiv0 = false;
@@ -553,16 +747,21 @@ OpFoldResult arith::DivSIOp::fold(FoldAdaptor adaptor) {
   return overflowOrDiv0 ? Attribute() : result;
 }
 
-Speculation::Speculatability arith::DivSIOp::getSpeculatability() {
-  bool mayHaveUB = true;
-
-  APInt constRHS;
+/// Returns whether a signed division by `divisor` is speculatable. This
+/// function conservatively assumes that all signed division by -1 are not
+/// speculatable.
+static Speculation::Speculatability getDivSISpeculatability(Value divisor) {
   // X / 0 => UB
   // INT_MIN / -1 => UB
-  if (matchPattern(getRhs(), m_ConstantInt(&constRHS)))
-    mayHaveUB = constRHS.isAllOnes() || constRHS.isZero();
+  if (matchPattern(divisor, m_IntRangeWithoutZeroS()) &&
+      matchPattern(divisor, m_IntRangeWithoutNegOneS()))
+    return Speculation::Speculatable;
 
-  return mayHaveUB ? Speculation::NotSpeculatable : Speculation::Speculatable;
+  return Speculation::NotSpeculatable;
+}
+
+Speculation::Speculatability arith::DivSIOp::getSpeculatability() {
+  return getDivSISpeculatability(getRhs());
 }
 
 //===----------------------------------------------------------------------===//
@@ -583,7 +782,7 @@ static APInt signedCeilNonnegInputs(const APInt &a, const APInt &b,
 
 OpFoldResult arith::CeilDivUIOp::fold(FoldAdaptor adaptor) {
   // ceildivui (x, 1) -> x.
-  if (matchPattern(getRhs(), m_One()))
+  if (matchPattern(adaptor.getRhs(), m_One()))
     return getLhs();
 
   bool overflowOrDiv0 = false;
@@ -604,9 +803,7 @@ OpFoldResult arith::CeilDivUIOp::fold(FoldAdaptor adaptor) {
 }
 
 Speculation::Speculatability arith::CeilDivUIOp::getSpeculatability() {
-  // X / 0 => UB
-  return matchPattern(getRhs(), m_NonZero()) ? Speculation::Speculatable
-                                             : Speculation::NotSpeculatable;
+  return getDivUISpeculatability(getRhs());
 }
 
 //===----------------------------------------------------------------------===//
@@ -615,10 +812,12 @@ Speculation::Speculatability arith::CeilDivUIOp::getSpeculatability() {
 
 OpFoldResult arith::CeilDivSIOp::fold(FoldAdaptor adaptor) {
   // ceildivsi (x, 1) -> x.
-  if (matchPattern(getRhs(), m_One()))
+  if (matchPattern(adaptor.getRhs(), m_One()))
     return getLhs();
 
   // Don't fold if it would overflow or if it requires a division by zero.
+  // TODO: This hook won't fold operations where a = MININT, because
+  // negating MININT overflows. This can be improved.
   bool overflowOrDiv0 = false;
   auto result = constFoldBinaryOp<IntegerAttr>(
       adaptor.getOperands(), [&](APInt a, const APInt &b) {
@@ -637,37 +836,43 @@ OpFoldResult arith::CeilDivSIOp::fold(FoldAdaptor adaptor) {
           // Both positive, return ceil(a, b).
           return signedCeilNonnegInputs(a, b, overflowOrDiv0);
         }
+
+        // No folding happens if any of the intermediate arithmetic operations
+        // overflows.
+        bool overflowNegA = false;
+        bool overflowNegB = false;
+        bool overflowDiv = false;
+        bool overflowNegRes = false;
         if (!aGtZero && !bGtZero) {
           // Both negative, return ceil(-a, -b).
-          APInt posA = zero.ssub_ov(a, overflowOrDiv0);
-          APInt posB = zero.ssub_ov(b, overflowOrDiv0);
-          return signedCeilNonnegInputs(posA, posB, overflowOrDiv0);
+          APInt posA = zero.ssub_ov(a, overflowNegA);
+          APInt posB = zero.ssub_ov(b, overflowNegB);
+          APInt res = signedCeilNonnegInputs(posA, posB, overflowDiv);
+          overflowOrDiv0 = (overflowNegA || overflowNegB || overflowDiv);
+          return res;
         }
         if (!aGtZero && bGtZero) {
           // A is negative, b is positive, return - ( -a / b).
-          APInt posA = zero.ssub_ov(a, overflowOrDiv0);
-          APInt div = posA.sdiv_ov(b, overflowOrDiv0);
-          return zero.ssub_ov(div, overflowOrDiv0);
+          APInt posA = zero.ssub_ov(a, overflowNegA);
+          APInt div = posA.sdiv_ov(b, overflowDiv);
+          APInt res = zero.ssub_ov(div, overflowNegRes);
+          overflowOrDiv0 = (overflowNegA || overflowDiv || overflowNegRes);
+          return res;
         }
         // A is positive, b is negative, return - (a / -b).
-        APInt posB = zero.ssub_ov(b, overflowOrDiv0);
-        APInt div = a.sdiv_ov(posB, overflowOrDiv0);
-        return zero.ssub_ov(div, overflowOrDiv0);
+        APInt posB = zero.ssub_ov(b, overflowNegB);
+        APInt div = a.sdiv_ov(posB, overflowDiv);
+        APInt res = zero.ssub_ov(div, overflowNegRes);
+
+        overflowOrDiv0 = (overflowNegB || overflowDiv || overflowNegRes);
+        return res;
       });
 
   return overflowOrDiv0 ? Attribute() : result;
 }
 
 Speculation::Speculatability arith::CeilDivSIOp::getSpeculatability() {
-  bool mayHaveUB = true;
-
-  APInt constRHS;
-  // X / 0 => UB
-  // INT_MIN / -1 => UB
-  if (matchPattern(getRhs(), m_ConstantInt(&constRHS)))
-    mayHaveUB = constRHS.isAllOnes() || constRHS.isZero();
-
-  return mayHaveUB ? Speculation::NotSpeculatable : Speculation::Speculatable;
+  return getDivSISpeculatability(getRhs());
 }
 
 //===----------------------------------------------------------------------===//
@@ -676,47 +881,21 @@ Speculation::Speculatability arith::CeilDivSIOp::getSpeculatability() {
 
 OpFoldResult arith::FloorDivSIOp::fold(FoldAdaptor adaptor) {
   // floordivsi (x, 1) -> x.
-  if (matchPattern(getRhs(), m_One()))
+  if (matchPattern(adaptor.getRhs(), m_One()))
     return getLhs();
 
   // Don't fold if it would overflow or if it requires a division by zero.
-  bool overflowOrDiv0 = false;
+  bool overflowOrDiv = false;
   auto result = constFoldBinaryOp<IntegerAttr>(
       adaptor.getOperands(), [&](APInt a, const APInt &b) {
-        if (overflowOrDiv0 || !b) {
-          overflowOrDiv0 = true;
+        if (b.isZero()) {
+          overflowOrDiv = true;
           return a;
         }
-        if (!a)
-          return a;
-        // After this point we know that neither a or b are zero.
-        unsigned bits = a.getBitWidth();
-        APInt zero = APInt::getZero(bits);
-        bool aGtZero = a.sgt(zero);
-        bool bGtZero = b.sgt(zero);
-        if (aGtZero && bGtZero) {
-          // Both positive, return a / b.
-          return a.sdiv_ov(b, overflowOrDiv0);
-        }
-        if (!aGtZero && !bGtZero) {
-          // Both negative, return -a / -b.
-          APInt posA = zero.ssub_ov(a, overflowOrDiv0);
-          APInt posB = zero.ssub_ov(b, overflowOrDiv0);
-          return posA.sdiv_ov(posB, overflowOrDiv0);
-        }
-        if (!aGtZero && bGtZero) {
-          // A is negative, b is positive, return - ceil(-a, b).
-          APInt posA = zero.ssub_ov(a, overflowOrDiv0);
-          APInt ceil = signedCeilNonnegInputs(posA, b, overflowOrDiv0);
-          return zero.ssub_ov(ceil, overflowOrDiv0);
-        }
-        // A is positive, b is negative, return - ceil(a, -b).
-        APInt posB = zero.ssub_ov(b, overflowOrDiv0);
-        APInt ceil = signedCeilNonnegInputs(a, posB, overflowOrDiv0);
-        return zero.ssub_ov(ceil, overflowOrDiv0);
+        return a.sfloordiv_ov(b, overflowOrDiv);
       });
 
-  return overflowOrDiv0 ? Attribute() : result;
+  return overflowOrDiv ? Attribute() : result;
 }
 
 //===----------------------------------------------------------------------===//
@@ -725,7 +904,7 @@ OpFoldResult arith::FloorDivSIOp::fold(FoldAdaptor adaptor) {
 
 OpFoldResult arith::RemUIOp::fold(FoldAdaptor adaptor) {
   // remui (x, 1) -> 0.
-  if (matchPattern(getRhs(), m_One()))
+  if (matchPattern(adaptor.getRhs(), m_One()))
     return Builder(getContext()).getZeroAttr(getType());
 
   // Don't fold if it would require a division by zero.
@@ -748,7 +927,7 @@ OpFoldResult arith::RemUIOp::fold(FoldAdaptor adaptor) {
 
 OpFoldResult arith::RemSIOp::fold(FoldAdaptor adaptor) {
   // remsi (x, 1) -> 0.
-  if (matchPattern(getRhs(), m_One()))
+  if (matchPattern(adaptor.getRhs(), m_One()))
     return Builder(getContext()).getZeroAttr(getType());
 
   // Don't fold if it would require a division by zero.
@@ -788,11 +967,12 @@ static Value foldAndIofAndI(arith::AndIOp op) {
 
 OpFoldResult arith::AndIOp::fold(FoldAdaptor adaptor) {
   /// and(x, 0) -> 0
-  if (matchPattern(getRhs(), m_Zero()))
+  if (matchPattern(adaptor.getRhs(), m_Zero()))
     return getRhs();
   /// and(x, allOnes) -> x
   APInt intValue;
-  if (matchPattern(getRhs(), m_ConstantInt(&intValue)) && intValue.isAllOnes())
+  if (matchPattern(adaptor.getRhs(), m_ConstantInt(&intValue)) &&
+      intValue.isAllOnes())
     return getLhs();
   /// and(x, not(x)) -> 0
   if (matchPattern(getRhs(), m_Op<XOrIOp>(matchers::m_Val(getLhs()),
@@ -819,13 +999,14 @@ OpFoldResult arith::AndIOp::fold(FoldAdaptor adaptor) {
 //===----------------------------------------------------------------------===//
 
 OpFoldResult arith::OrIOp::fold(FoldAdaptor adaptor) {
-  /// or(x, 0) -> x
-  if (matchPattern(getRhs(), m_Zero()))
-    return getLhs();
-  /// or(x, <all ones>) -> <all ones>
-  if (auto rhsAttr = llvm::dyn_cast_if_present<IntegerAttr>(adaptor.getRhs()))
-    if (rhsAttr.getValue().isAllOnes())
-      return rhsAttr;
+  if (APInt rhsVal; matchPattern(adaptor.getRhs(), m_ConstantInt(&rhsVal))) {
+    /// or(x, 0) -> x
+    if (rhsVal.isZero())
+      return getLhs();
+    /// or(x, <all ones>) -> <all ones>
+    if (rhsVal.isAllOnes())
+      return adaptor.getRhs();
+  }
 
   APInt intValue;
   /// or(x, xor(x, 1)) -> 1
@@ -850,7 +1031,7 @@ OpFoldResult arith::OrIOp::fold(FoldAdaptor adaptor) {
 
 OpFoldResult arith::XOrIOp::fold(FoldAdaptor adaptor) {
   /// xor(x, 0) -> x
-  if (matchPattern(getRhs(), m_Zero()))
+  if (matchPattern(adaptor.getRhs(), m_Zero()))
     return getLhs();
   /// xor(x, x) -> 0
   if (getLhs() == getRhs())
@@ -900,7 +1081,7 @@ OpFoldResult arith::NegFOp::fold(FoldAdaptor adaptor) {
 
 OpFoldResult arith::AddFOp::fold(FoldAdaptor adaptor) {
   // addf(x, -0) -> x
-  if (matchPattern(getRhs(), m_NegZeroFloat()))
+  if (matchPattern(adaptor.getRhs(), m_NegZeroFloat()))
     return getLhs();
 
   return constFoldBinaryOp<FloatAttr>(
@@ -914,7 +1095,7 @@ OpFoldResult arith::AddFOp::fold(FoldAdaptor adaptor) {
 
 OpFoldResult arith::SubFOp::fold(FoldAdaptor adaptor) {
   // subf(x, +0) -> x
-  if (matchPattern(getRhs(), m_PosZeroFloat()))
+  if (matchPattern(adaptor.getRhs(), m_PosZeroFloat()))
     return getLhs();
 
   return constFoldBinaryOp<FloatAttr>(
@@ -923,21 +1104,37 @@ OpFoldResult arith::SubFOp::fold(FoldAdaptor adaptor) {
 }
 
 //===----------------------------------------------------------------------===//
-// MaxFOp
+// MaximumFOp
 //===----------------------------------------------------------------------===//
 
-OpFoldResult arith::MaxFOp::fold(FoldAdaptor adaptor) {
-  // maxf(x,x) -> x
+OpFoldResult arith::MaximumFOp::fold(FoldAdaptor adaptor) {
+  // maximumf(x,x) -> x
   if (getLhs() == getRhs())
     return getRhs();
 
-  // maxf(x, -inf) -> x
-  if (matchPattern(getRhs(), m_NegInfFloat()))
+  // maximumf(x, -inf) -> x
+  if (matchPattern(adaptor.getRhs(), m_NegInfFloat()))
     return getLhs();
 
   return constFoldBinaryOp<FloatAttr>(
       adaptor.getOperands(),
       [](const APFloat &a, const APFloat &b) { return llvm::maximum(a, b); });
+}
+
+//===----------------------------------------------------------------------===//
+// MaxNumFOp
+//===----------------------------------------------------------------------===//
+
+OpFoldResult arith::MaxNumFOp::fold(FoldAdaptor adaptor) {
+  // maxnumf(x,x) -> x
+  if (getLhs() == getRhs())
+    return getRhs();
+
+  // maxnumf(x, NaN) -> x
+  if (matchPattern(adaptor.getRhs(), m_NaNFloat()))
+    return getLhs();
+
+  return constFoldBinaryOp<FloatAttr>(adaptor.getOperands(), llvm::maxnum);
 }
 
 //===----------------------------------------------------------------------===//
@@ -949,16 +1146,15 @@ OpFoldResult MaxSIOp::fold(FoldAdaptor adaptor) {
   if (getLhs() == getRhs())
     return getRhs();
 
-  APInt intValue;
-  // maxsi(x,MAX_INT) -> MAX_INT
-  if (matchPattern(getRhs(), m_ConstantInt(&intValue)) &&
-      intValue.isMaxSignedValue())
-    return getRhs();
-
-  // maxsi(x, MIN_INT) -> x
-  if (matchPattern(getRhs(), m_ConstantInt(&intValue)) &&
-      intValue.isMinSignedValue())
-    return getLhs();
+  if (APInt intValue;
+      matchPattern(adaptor.getRhs(), m_ConstantInt(&intValue))) {
+    // maxsi(x,MAX_INT) -> MAX_INT
+    if (intValue.isMaxSignedValue())
+      return getRhs();
+    // maxsi(x, MIN_INT) -> x
+    if (intValue.isMinSignedValue())
+      return getLhs();
+  }
 
   return constFoldBinaryOp<IntegerAttr>(adaptor.getOperands(),
                                         [](const APInt &a, const APInt &b) {
@@ -975,14 +1171,15 @@ OpFoldResult MaxUIOp::fold(FoldAdaptor adaptor) {
   if (getLhs() == getRhs())
     return getRhs();
 
-  APInt intValue;
-  // maxui(x,MAX_INT) -> MAX_INT
-  if (matchPattern(getRhs(), m_ConstantInt(&intValue)) && intValue.isMaxValue())
-    return getRhs();
-
-  // maxui(x, MIN_INT) -> x
-  if (matchPattern(getRhs(), m_ConstantInt(&intValue)) && intValue.isMinValue())
-    return getLhs();
+  if (APInt intValue;
+      matchPattern(adaptor.getRhs(), m_ConstantInt(&intValue))) {
+    // maxui(x,MAX_INT) -> MAX_INT
+    if (intValue.isMaxValue())
+      return getRhs();
+    // maxui(x, MIN_INT) -> x
+    if (intValue.isMinValue())
+      return getLhs();
+  }
 
   return constFoldBinaryOp<IntegerAttr>(adaptor.getOperands(),
                                         [](const APInt &a, const APInt &b) {
@@ -991,21 +1188,39 @@ OpFoldResult MaxUIOp::fold(FoldAdaptor adaptor) {
 }
 
 //===----------------------------------------------------------------------===//
-// MinFOp
+// MinimumFOp
 //===----------------------------------------------------------------------===//
 
-OpFoldResult arith::MinFOp::fold(FoldAdaptor adaptor) {
-  // minf(x,x) -> x
+OpFoldResult arith::MinimumFOp::fold(FoldAdaptor adaptor) {
+  // minimumf(x,x) -> x
   if (getLhs() == getRhs())
     return getRhs();
 
-  // minf(x, +inf) -> x
-  if (matchPattern(getRhs(), m_PosInfFloat()))
+  // minimumf(x, +inf) -> x
+  if (matchPattern(adaptor.getRhs(), m_PosInfFloat()))
     return getLhs();
 
   return constFoldBinaryOp<FloatAttr>(
       adaptor.getOperands(),
       [](const APFloat &a, const APFloat &b) { return llvm::minimum(a, b); });
+}
+
+//===----------------------------------------------------------------------===//
+// MinNumFOp
+//===----------------------------------------------------------------------===//
+
+OpFoldResult arith::MinNumFOp::fold(FoldAdaptor adaptor) {
+  // minnumf(x,x) -> x
+  if (getLhs() == getRhs())
+    return getRhs();
+
+  // minnumf(x, NaN) -> x
+  if (matchPattern(adaptor.getRhs(), m_NaNFloat()))
+    return getLhs();
+
+  return constFoldBinaryOp<FloatAttr>(
+      adaptor.getOperands(),
+      [](const APFloat &a, const APFloat &b) { return llvm::minnum(a, b); });
 }
 
 //===----------------------------------------------------------------------===//
@@ -1017,16 +1232,15 @@ OpFoldResult MinSIOp::fold(FoldAdaptor adaptor) {
   if (getLhs() == getRhs())
     return getRhs();
 
-  APInt intValue;
-  // minsi(x,MIN_INT) -> MIN_INT
-  if (matchPattern(getRhs(), m_ConstantInt(&intValue)) &&
-      intValue.isMinSignedValue())
-    return getRhs();
-
-  // minsi(x, MAX_INT) -> x
-  if (matchPattern(getRhs(), m_ConstantInt(&intValue)) &&
-      intValue.isMaxSignedValue())
-    return getLhs();
+  if (APInt intValue;
+      matchPattern(adaptor.getRhs(), m_ConstantInt(&intValue))) {
+    // minsi(x,MIN_INT) -> MIN_INT
+    if (intValue.isMinSignedValue())
+      return getRhs();
+    // minsi(x, MAX_INT) -> x
+    if (intValue.isMaxSignedValue())
+      return getLhs();
+  }
 
   return constFoldBinaryOp<IntegerAttr>(adaptor.getOperands(),
                                         [](const APInt &a, const APInt &b) {
@@ -1043,14 +1257,15 @@ OpFoldResult MinUIOp::fold(FoldAdaptor adaptor) {
   if (getLhs() == getRhs())
     return getRhs();
 
-  APInt intValue;
-  // minui(x,MIN_INT) -> MIN_INT
-  if (matchPattern(getRhs(), m_ConstantInt(&intValue)) && intValue.isMinValue())
-    return getRhs();
-
-  // minui(x, MAX_INT) -> x
-  if (matchPattern(getRhs(), m_ConstantInt(&intValue)) && intValue.isMaxValue())
-    return getLhs();
+  if (APInt intValue;
+      matchPattern(adaptor.getRhs(), m_ConstantInt(&intValue))) {
+    // minui(x,MIN_INT) -> MIN_INT
+    if (intValue.isMinValue())
+      return getRhs();
+    // minui(x, MAX_INT) -> x
+    if (intValue.isMaxValue())
+      return getLhs();
+  }
 
   return constFoldBinaryOp<IntegerAttr>(adaptor.getOperands(),
                                         [](const APInt &a, const APInt &b) {
@@ -1064,8 +1279,15 @@ OpFoldResult MinUIOp::fold(FoldAdaptor adaptor) {
 
 OpFoldResult arith::MulFOp::fold(FoldAdaptor adaptor) {
   // mulf(x, 1) -> x
-  if (matchPattern(getRhs(), m_OneFloat()))
+  if (matchPattern(adaptor.getRhs(), m_OneFloat()))
     return getLhs();
+
+  if (arith::bitEnumContainsAll(getFastmath(), arith::FastMathFlags::nnan |
+                                                   arith::FastMathFlags::nsz)) {
+    // mulf(x, 0) -> 0
+    if (matchPattern(adaptor.getRhs(), m_AnyZeroFloat()))
+      return getRhs();
+  }
 
   return constFoldBinaryOp<FloatAttr>(
       adaptor.getOperands(),
@@ -1083,7 +1305,7 @@ void arith::MulFOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
 
 OpFoldResult arith::DivFOp::fold(FoldAdaptor adaptor) {
   // divf(x, 1) -> x
-  if (matchPattern(getRhs(), m_OneFloat()))
+  if (matchPattern(adaptor.getRhs(), m_OneFloat()))
     return getLhs();
 
   return constFoldBinaryOp<FloatAttr>(
@@ -1104,7 +1326,10 @@ OpFoldResult arith::RemFOp::fold(FoldAdaptor adaptor) {
   return constFoldBinaryOp<FloatAttr>(adaptor.getOperands(),
                                       [](const APFloat &a, const APFloat &b) {
                                         APFloat result(a);
-                                        (void)result.remainder(b);
+                                        // APFloat::mod() offers the remainder
+                                        // behavior we want, i.e. the result has
+                                        // the sign of LHS operand.
+                                        (void)result.mod(b);
                                         return result;
                                       });
 }
@@ -1211,6 +1436,19 @@ static bool checkWidthChangeCast(TypeRange inputs, TypeRange outputs) {
                                      srcType.getIntOrFloatBitWidth());
 }
 
+/// Attempts to convert `sourceValue` to an APFloat value with
+/// `targetSemantics` and `roundingMode`, without any information loss.
+static FailureOr<APFloat> convertFloatValue(
+    APFloat sourceValue, const llvm::fltSemantics &targetSemantics,
+    llvm::RoundingMode roundingMode = llvm::RoundingMode::NearestTiesToEven) {
+  bool losesInfo = false;
+  auto status = sourceValue.convert(targetSemantics, roundingMode, &losesInfo);
+  if (losesInfo || status != APFloat::opOK)
+    return failure();
+
+  return sourceValue;
+}
+
 //===----------------------------------------------------------------------===//
 // ExtUIOp
 //===----------------------------------------------------------------------===//
@@ -1274,14 +1512,37 @@ LogicalResult arith::ExtSIOp::verify() {
 // ExtFOp
 //===----------------------------------------------------------------------===//
 
-/// Always fold extension of FP constants.
+/// Fold extension of float constants when there is no information loss due the
+/// difference in fp semantics.
 OpFoldResult arith::ExtFOp::fold(FoldAdaptor adaptor) {
-  auto constOperand = llvm::dyn_cast_if_present<FloatAttr>(adaptor.getIn());
-  if (!constOperand)
-    return {};
+  if (auto truncFOp = getOperand().getDefiningOp<TruncFOp>()) {
+    if (truncFOp.getOperand().getType() == getType()) {
+      arith::FastMathFlags truncFMF =
+          truncFOp.getFastmath().value_or(arith::FastMathFlags::none);
+      bool isTruncContract =
+          bitEnumContainsAll(truncFMF, arith::FastMathFlags::contract);
+      arith::FastMathFlags extFMF =
+          getFastmath().value_or(arith::FastMathFlags::none);
+      bool isExtContract =
+          bitEnumContainsAll(extFMF, arith::FastMathFlags::contract);
+      if (isTruncContract && isExtContract) {
+        return truncFOp.getOperand();
+      }
+    }
+  }
 
-  // Convert to target type via 'double'.
-  return FloatAttr::get(getType(), constOperand.getValue().convertToDouble());
+  auto resElemType = cast<FloatType>(getElementTypeOrSelf(getType()));
+  const llvm::fltSemantics &targetSemantics = resElemType.getFloatSemantics();
+  return constFoldCastOp<FloatAttr, FloatAttr>(
+      adaptor.getOperands(), getType(),
+      [&targetSemantics](const APFloat &a, bool &castStatus) {
+        FailureOr<APFloat> result = convertFloatValue(a, targetSemantics);
+        if (failed(result)) {
+          castStatus = false;
+          return a;
+        }
+        return *result;
+      });
 }
 
 bool arith::ExtFOp::areCastCompatible(TypeRange inputs, TypeRange outputs) {
@@ -1289,6 +1550,19 @@ bool arith::ExtFOp::areCastCompatible(TypeRange inputs, TypeRange outputs) {
 }
 
 LogicalResult arith::ExtFOp::verify() { return verifyExtOp<FloatType>(*this); }
+
+//===----------------------------------------------------------------------===//
+// ScalingExtFOp
+//===----------------------------------------------------------------------===//
+
+bool arith::ScalingExtFOp::areCastCompatible(TypeRange inputs,
+                                             TypeRange outputs) {
+  return checkWidthChangeCast<std::greater, FloatType>(inputs.front(), outputs);
+}
+
+LogicalResult arith::ScalingExtFOp::verify() {
+  return verifyExtOp<FloatType>(*this);
+}
 
 //===----------------------------------------------------------------------===//
 // TruncIOp
@@ -1307,9 +1581,11 @@ OpFoldResult arith::TruncIOp::fold(FoldAdaptor adaptor) {
       setOperand(src);
       return getResult();
     }
+
     // trunci(zexti(a)) -> a
     // trunci(sexti(a)) -> a
-    return src;
+    if (srcType == dstType)
+      return src;
   }
 
   // trunci(trunci(a)) -> trunci(a))
@@ -1333,9 +1609,9 @@ bool arith::TruncIOp::areCastCompatible(TypeRange inputs, TypeRange outputs) {
 
 void arith::TruncIOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                                   MLIRContext *context) {
-  patterns.add<TruncIExtSIToExtSI, TruncIExtUIToExtUI, TruncIShrSIToTrunciShrUI,
-               TruncIShrUIMulIToMulSIExtended, TruncIShrUIMulIToMulUIExtended>(
-      context);
+  patterns
+      .add<TruncIExtSIToExtSI, TruncIExtUIToExtUI, TruncIShrSIToTrunciShrUI>(
+          context);
 }
 
 LogicalResult arith::TruncIOp::verify() {
@@ -1346,23 +1622,52 @@ LogicalResult arith::TruncIOp::verify() {
 // TruncFOp
 //===----------------------------------------------------------------------===//
 
-/// Perform safe const propagation for truncf, i.e. only propagate if FP value
-/// can be represented without precision loss or rounding.
+/// Perform safe const propagation for truncf, i.e., only propagate if FP value
+/// can be represented without precision loss.
 OpFoldResult arith::TruncFOp::fold(FoldAdaptor adaptor) {
-  auto constOperand = adaptor.getIn();
-  if (!constOperand || !llvm::isa<FloatAttr>(constOperand))
-    return {};
+  auto resElemType = cast<FloatType>(getElementTypeOrSelf(getType()));
+  if (auto extOp = getOperand().getDefiningOp<arith::ExtFOp>()) {
+    Value src = extOp.getIn();
+    auto srcType = cast<FloatType>(getElementTypeOrSelf(src.getType()));
+    auto intermediateType =
+        cast<FloatType>(getElementTypeOrSelf(extOp.getType()));
+    // Check if the srcType is representable in the intermediateType.
+    if (llvm::APFloatBase::isRepresentableBy(
+            srcType.getFloatSemantics(),
+            intermediateType.getFloatSemantics())) {
+      // truncf(extf(a)) -> truncf(a)
+      if (srcType.getWidth() > resElemType.getWidth()) {
+        setOperand(src);
+        return getResult();
+      }
 
-  // Convert to target type via 'double'.
-  double sourceValue =
-      llvm::dyn_cast<FloatAttr>(constOperand).getValue().convertToDouble();
-  auto targetAttr = FloatAttr::get(getType(), sourceValue);
+      // truncf(extf(a)) -> a
+      if (srcType == resElemType)
+        return src;
+    }
+  }
 
-  // Propagate if constant's value does not change after truncation.
-  if (sourceValue == targetAttr.getValue().convertToDouble())
-    return targetAttr;
+  const llvm::fltSemantics &targetSemantics = resElemType.getFloatSemantics();
+  return constFoldCastOp<FloatAttr, FloatAttr>(
+      adaptor.getOperands(), getType(),
+      [this, &targetSemantics](const APFloat &a, bool &castStatus) {
+        RoundingMode roundingMode =
+            getRoundingmode().value_or(RoundingMode::to_nearest_even);
+        llvm::RoundingMode llvmRoundingMode =
+            convertArithRoundingModeToLLVMIR(roundingMode);
+        FailureOr<APFloat> result =
+            convertFloatValue(a, targetSemantics, llvmRoundingMode);
+        if (failed(result)) {
+          castStatus = false;
+          return a;
+        }
+        return *result;
+      });
+}
 
-  return {};
+void arith::TruncFOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                                  MLIRContext *context) {
+  patterns.add<TruncFSIToFPToSIToFP, TruncFUIToFPToUIToFP>(context);
 }
 
 bool arith::TruncFOp::areCastCompatible(TypeRange inputs, TypeRange outputs) {
@@ -1370,6 +1675,19 @@ bool arith::TruncFOp::areCastCompatible(TypeRange inputs, TypeRange outputs) {
 }
 
 LogicalResult arith::TruncFOp::verify() {
+  return verifyTruncateOp<FloatType>(*this);
+}
+
+//===----------------------------------------------------------------------===//
+// ScalingTruncFOp
+//===----------------------------------------------------------------------===//
+
+bool arith::ScalingTruncFOp::areCastCompatible(TypeRange inputs,
+                                               TypeRange outputs) {
+  return checkWidthChangeCast<std::less, FloatType>(inputs.front(), outputs);
+}
+
+LogicalResult arith::ScalingTruncFOp::verify() {
   return verifyTruncateOp<FloatType>(*this);
 }
 
@@ -1449,6 +1767,7 @@ OpFoldResult arith::SIToFPOp::fold(FoldAdaptor adaptor) {
         return apf;
       });
 }
+
 //===----------------------------------------------------------------------===//
 // FPToUIOp
 //===----------------------------------------------------------------------===//
@@ -1568,10 +1887,8 @@ bool arith::BitcastOp::areCastCompatible(TypeRange inputs, TypeRange outputs) {
   if (!areValidCastInputsAndOutputs(inputs, outputs))
     return false;
 
-  auto srcType =
-      getTypeIfLikeOrMemRef<IntegerType, IndexType, FloatType>(inputs.front());
-  auto dstType =
-      getTypeIfLikeOrMemRef<IntegerType, IndexType, FloatType>(outputs.front());
+  auto srcType = getTypeIfLikeOrMemRef<IntegerType, FloatType>(inputs.front());
+  auto dstType = getTypeIfLikeOrMemRef<IntegerType, FloatType>(outputs.front());
   if (!srcType || !dstType)
     return false;
 
@@ -1585,18 +1902,24 @@ OpFoldResult arith::BitcastOp::fold(FoldAdaptor adaptor) {
     return {};
 
   /// Bitcast dense elements.
-  if (auto denseAttr = llvm::dyn_cast_or_null<DenseElementsAttr>(operand))
+  if (auto denseAttr = dyn_cast_or_null<DenseElementsAttr>(operand))
     return denseAttr.bitcast(llvm::cast<ShapedType>(resType).getElementType());
   /// Other shaped types unhandled.
   if (llvm::isa<ShapedType>(resType))
     return {};
 
+  /// Bitcast poison.
+  if (llvm::isa<ub::PoisonAttr>(operand))
+    return ub::PoisonAttr::get(getContext());
+
   /// Bitcast integer or float to integer or float.
   APInt bits = llvm::isa<FloatAttr>(operand)
                    ? llvm::cast<FloatAttr>(operand).getValue().bitcastToAPInt()
                    : llvm::cast<IntegerAttr>(operand).getValue();
+  assert(resType.getIntOrFloatBitWidth() == bits.getBitWidth() &&
+         "trying to fold on broken IR: operands have incompatible types");
 
-  if (auto resFloatType = llvm::dyn_cast<FloatType>(resType))
+  if (auto resFloatType = dyn_cast<FloatType>(resType))
     return FloatAttr::get(resType,
                           APFloat(resFloatType.getFloatSemantics(), bits));
   return IntegerAttr::get(resType, bits);
@@ -1659,19 +1982,11 @@ static bool applyCmpPredicateToEqualOperands(arith::CmpIPredicate predicate) {
   llvm_unreachable("unknown cmpi predicate kind");
 }
 
-static Attribute getBoolAttribute(Type type, MLIRContext *ctx, bool value) {
-  auto boolAttr = BoolAttr::get(ctx, value);
-  ShapedType shapedType = llvm::dyn_cast_or_null<ShapedType>(type);
-  if (!shapedType)
-    return boolAttr;
-  return DenseElementsAttr::get(shapedType, boolAttr);
-}
-
 static std::optional<int64_t> getIntegerWidth(Type t) {
-  if (auto intType = llvm::dyn_cast<IntegerType>(t)) {
+  if (auto intType = dyn_cast<IntegerType>(t)) {
     return intType.getWidth();
   }
-  if (auto vectorIntType = llvm::dyn_cast<VectorType>(t)) {
+  if (auto vectorIntType = dyn_cast<VectorType>(t)) {
     return llvm::cast<IntegerType>(vectorIntType.getElementType()).getWidth();
   }
   return std::nullopt;
@@ -1681,10 +1996,10 @@ OpFoldResult arith::CmpIOp::fold(FoldAdaptor adaptor) {
   // cmpi(pred, x, x)
   if (getLhs() == getRhs()) {
     auto val = applyCmpPredicateToEqualOperands(getPredicate());
-    return getBoolAttribute(getType(), getContext(), val);
+    return getBoolAttribute(getType(), val);
   }
 
-  if (matchPattern(getRhs(), m_Zero())) {
+  if (matchPattern(adaptor.getRhs(), m_Zero())) {
     if (auto extOp = getLhs().getDefiningOp<ExtSIOp>()) {
       // extsi(%x : i1 -> iN) != 0  ->  %x
       std::optional<int64_t> integerWidth =
@@ -1701,6 +2016,18 @@ OpFoldResult arith::CmpIOp::fold(FoldAdaptor adaptor) {
           getPredicate() == arith::CmpIPredicate::ne)
         return extOp.getOperand();
     }
+
+    // arith.cmpi ne, %val, %zero : i1 -> %val
+    if (getElementTypeOrSelf(getLhs().getType()).isInteger(1) &&
+        getPredicate() == arith::CmpIPredicate::ne)
+      return getLhs();
+  }
+
+  if (matchPattern(adaptor.getRhs(), m_One())) {
+    // arith.cmpi eq, %val, %one : i1 -> %val
+    if (getElementTypeOrSelf(getLhs().getType()).isInteger(1) &&
+        getPredicate() == arith::CmpIPredicate::eq)
+      return getLhs();
   }
 
   // Move constant to the right side.
@@ -1729,7 +2056,7 @@ OpFoldResult arith::CmpIOp::fold(FoldAdaptor adaptor) {
 
   // We are moving constants to the right side; So if lhs is constant rhs is
   // guaranteed to be a constant.
-  if (auto lhs = llvm::dyn_cast_if_present<TypedAttr>(adaptor.getLhs())) {
+  if (auto lhs = dyn_cast_if_present<TypedAttr>(adaptor.getLhs())) {
     return constFoldBinaryOp<IntegerAttr>(
         adaptor.getOperands(), getI1SameShape(lhs.getType()),
         [pred = getPredicate()](const APInt &lhs, const APInt &rhs) {
@@ -1799,8 +2126,8 @@ bool mlir::arith::applyCmpPredicate(arith::CmpFPredicate predicate,
 }
 
 OpFoldResult arith::CmpFOp::fold(FoldAdaptor adaptor) {
-  auto lhs = llvm::dyn_cast_if_present<FloatAttr>(adaptor.getLhs());
-  auto rhs = llvm::dyn_cast_if_present<FloatAttr>(adaptor.getRhs());
+  auto lhs = dyn_cast_if_present<FloatAttr>(adaptor.getLhs());
+  auto rhs = dyn_cast_if_present<FloatAttr>(adaptor.getRhs());
 
   // If one operand is NaN, making them both NaN does not change the result.
   if (lhs && lhs.getValue().isNaN())
@@ -1817,7 +2144,7 @@ OpFoldResult arith::CmpFOp::fold(FoldAdaptor adaptor) {
 
 class CmpFIntToFPConst final : public OpRewritePattern<CmpFOp> {
 public:
-  using OpRewritePattern<CmpFOp>::OpRewritePattern;
+  using Base::Base;
 
   static CmpIPredicate convertToIntegerPredicate(CmpFPredicate pred,
                                                  bool isUnsigned) {
@@ -2094,9 +2421,8 @@ public:
     // comparison.
     rewriter.replaceOpWithNewOp<CmpIOp>(
         op, pred, intVal,
-        rewriter.create<ConstantOp>(
-            op.getLoc(), intVal.getType(),
-            rewriter.getIntegerAttr(intVal.getType(), rhsInt)));
+        ConstantOp::create(rewriter, op.getLoc(), intVal.getType(),
+                           rewriter.getIntegerAttr(intVal.getType(), rhsInt)));
     return success();
   }
 };
@@ -2110,38 +2436,9 @@ void arith::CmpFOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
 // SelectOp
 //===----------------------------------------------------------------------===//
 
-// Transforms a select of a boolean to arithmetic operations
-//
-//  arith.select %arg, %x, %y : i1
-//
-//  becomes
-//
-//  and(%arg, %x) or and(!%arg, %y)
-struct SelectI1Simplify : public OpRewritePattern<arith::SelectOp> {
-  using OpRewritePattern<arith::SelectOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(arith::SelectOp op,
-                                PatternRewriter &rewriter) const override {
-    if (!op.getType().isInteger(1))
-      return failure();
-
-    Value falseConstant =
-        rewriter.create<arith::ConstantIntOp>(op.getLoc(), true, 1);
-    Value notCondition = rewriter.create<arith::XOrIOp>(
-        op.getLoc(), op.getCondition(), falseConstant);
-
-    Value trueVal = rewriter.create<arith::AndIOp>(
-        op.getLoc(), op.getCondition(), op.getTrueValue());
-    Value falseVal = rewriter.create<arith::AndIOp>(op.getLoc(), notCondition,
-                                                    op.getFalseValue());
-    rewriter.replaceOpWithNewOp<arith::OrIOp>(op, trueVal, falseVal);
-    return success();
-  }
-};
-
 //  select %arg, %c1, %c0 => extui %arg
 struct SelectToExtUI : public OpRewritePattern<arith::SelectOp> {
-  using OpRewritePattern<arith::SelectOp>::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(arith::SelectOp op,
                                 PatternRewriter &rewriter) const override {
@@ -2162,10 +2459,10 @@ struct SelectToExtUI : public OpRewritePattern<arith::SelectOp> {
         matchPattern(op.getFalseValue(), m_One())) {
       rewriter.replaceOpWithNewOp<arith::ExtUIOp>(
           op, op.getType(),
-          rewriter.create<arith::XOrIOp>(
-              op.getLoc(), op.getCondition(),
-              rewriter.create<arith::ConstantIntOp>(
-                  op.getLoc(), 1, op.getCondition().getType())));
+          arith::XOrIOp::create(
+              rewriter, op.getLoc(), op.getCondition(),
+              arith::ConstantIntOp::create(rewriter, op.getLoc(),
+                                           op.getCondition().getType(), 1)));
       return success();
     }
 
@@ -2175,7 +2472,8 @@ struct SelectToExtUI : public OpRewritePattern<arith::SelectOp> {
 
 void arith::SelectOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                                   MLIRContext *context) {
-  results.add<SelectI1Simplify, SelectToExtUI>(context);
+  results.add<RedundantSelectFalse, RedundantSelectTrue, SelectNotCond,
+              SelectI1ToNot, SelectToExtUI>(context);
 }
 
 OpFoldResult arith::SelectOp::fold(FoldAdaptor adaptor) {
@@ -2187,19 +2485,27 @@ OpFoldResult arith::SelectOp::fold(FoldAdaptor adaptor) {
   Value condition = getCondition();
 
   // select true, %0, %1 => %0
-  if (matchPattern(condition, m_One()))
+  if (matchPattern(adaptor.getCondition(), m_One()))
     return trueVal;
 
   // select false, %0, %1 => %1
-  if (matchPattern(condition, m_Zero()))
+  if (matchPattern(adaptor.getCondition(), m_Zero()))
     return falseVal;
 
+  // If either operand is fully poisoned, return the other.
+  if (isa_and_nonnull<ub::PoisonAttr>(adaptor.getTrueValue()))
+    return falseVal;
+
+  if (isa_and_nonnull<ub::PoisonAttr>(adaptor.getFalseValue()))
+    return trueVal;
+
   // select %x, true, false => %x
-  if (getType().isInteger(1) && matchPattern(getTrueValue(), m_One()) &&
-      matchPattern(getFalseValue(), m_Zero()))
+  if (getType().isSignlessInteger(1) &&
+      matchPattern(adaptor.getTrueValue(), m_One()) &&
+      matchPattern(adaptor.getFalseValue(), m_Zero()))
     return condition;
 
-  if (auto cmp = dyn_cast_or_null<arith::CmpIOp>(condition.getDefiningOp())) {
+  if (auto cmp = condition.getDefiningOp<arith::CmpIOp>()) {
     auto pred = cmp.getPredicate();
     if (pred == arith::CmpIPredicate::eq || pred == arith::CmpIPredicate::ne) {
       auto cmpLhs = cmp.getLhs();
@@ -2220,11 +2526,11 @@ OpFoldResult arith::SelectOp::fold(FoldAdaptor adaptor) {
   // Constant-fold constant operands over non-splat constant condition.
   // select %cst_vec, %cst0, %cst1 => %cst2
   if (auto cond =
-          llvm::dyn_cast_if_present<DenseElementsAttr>(adaptor.getCondition())) {
+          dyn_cast_if_present<DenseElementsAttr>(adaptor.getCondition())) {
     if (auto lhs =
-            llvm::dyn_cast_if_present<DenseElementsAttr>(adaptor.getTrueValue())) {
+            dyn_cast_if_present<DenseElementsAttr>(adaptor.getTrueValue())) {
       if (auto rhs =
-              llvm::dyn_cast_if_present<DenseElementsAttr>(adaptor.getFalseValue())) {
+              dyn_cast_if_present<DenseElementsAttr>(adaptor.getFalseValue())) {
         SmallVector<Attribute> results;
         results.reserve(static_cast<size_t>(cond.getNumElements()));
         auto condVals = llvm::make_range(cond.value_begin<BoolAttr>(),
@@ -2273,8 +2579,7 @@ void arith::SelectOp::print(OpAsmPrinter &p) {
   p << " " << getOperands();
   p.printOptionalAttrDict((*this)->getAttrs());
   p << " : ";
-  if (ShapedType condType =
-          llvm::dyn_cast<ShapedType>(getCondition().getType()))
+  if (ShapedType condType = dyn_cast<ShapedType>(getCondition().getType()))
     p << condType << ", ";
   p << getType();
 }
@@ -2305,13 +2610,13 @@ LogicalResult arith::SelectOp::verify() {
 
 OpFoldResult arith::ShLIOp::fold(FoldAdaptor adaptor) {
   // shli(x, 0) -> x
-  if (matchPattern(getRhs(), m_Zero()))
+  if (matchPattern(adaptor.getRhs(), m_Zero()))
     return getLhs();
-  // Don't fold if shifting more than the bit width.
+  // Don't fold if shifting more or equal than the bit width.
   bool bounded = false;
   auto result = constFoldBinaryOp<IntegerAttr>(
       adaptor.getOperands(), [&](const APInt &a, const APInt &b) {
-        bounded = b.ule(b.getBitWidth());
+        bounded = b.ult(b.getBitWidth());
         return a.shl(b);
       });
   return bounded ? result : Attribute();
@@ -2323,13 +2628,13 @@ OpFoldResult arith::ShLIOp::fold(FoldAdaptor adaptor) {
 
 OpFoldResult arith::ShRUIOp::fold(FoldAdaptor adaptor) {
   // shrui(x, 0) -> x
-  if (matchPattern(getRhs(), m_Zero()))
+  if (matchPattern(adaptor.getRhs(), m_Zero()))
     return getLhs();
-  // Don't fold if shifting more than the bit width.
+  // Don't fold if shifting more or equal than the bit width.
   bool bounded = false;
   auto result = constFoldBinaryOp<IntegerAttr>(
       adaptor.getOperands(), [&](const APInt &a, const APInt &b) {
-        bounded = b.ule(b.getBitWidth());
+        bounded = b.ult(b.getBitWidth());
         return a.lshr(b);
       });
   return bounded ? result : Attribute();
@@ -2341,13 +2646,13 @@ OpFoldResult arith::ShRUIOp::fold(FoldAdaptor adaptor) {
 
 OpFoldResult arith::ShRSIOp::fold(FoldAdaptor adaptor) {
   // shrsi(x, 0) -> x
-  if (matchPattern(getRhs(), m_Zero()))
+  if (matchPattern(adaptor.getRhs(), m_Zero()))
     return getLhs();
-  // Don't fold if shifting more than the bit width.
+  // Don't fold if shifting more or equal than the bit width.
   bool bounded = false;
   auto result = constFoldBinaryOp<IntegerAttr>(
       adaptor.getOperands(), [&](const APInt &a, const APInt &b) {
-        bounded = b.ule(b.getBitWidth());
+        bounded = b.ult(b.getBitWidth());
         return a.ashr(b);
       });
   return bounded ? result : Attribute();
@@ -2359,17 +2664,28 @@ OpFoldResult arith::ShRSIOp::fold(FoldAdaptor adaptor) {
 
 /// Returns the identity value attribute associated with an AtomicRMWKind op.
 TypedAttr mlir::arith::getIdentityValueAttr(AtomicRMWKind kind, Type resultType,
-                                            OpBuilder &builder, Location loc) {
+                                            OpBuilder &builder, Location loc,
+                                            bool useOnlyFiniteValue) {
   switch (kind) {
-  case AtomicRMWKind::maxf:
-    return builder.getFloatAttr(
-        resultType,
-        APFloat::getInf(llvm::cast<FloatType>(resultType).getFloatSemantics(),
-                        /*Negative=*/true));
+  case AtomicRMWKind::maximumf: {
+    const llvm::fltSemantics &semantic =
+        llvm::cast<FloatType>(resultType).getFloatSemantics();
+    APFloat identity = useOnlyFiniteValue
+                           ? APFloat::getLargest(semantic, /*Negative=*/true)
+                           : APFloat::getInf(semantic, /*Negative=*/true);
+    return builder.getFloatAttr(resultType, identity);
+  }
+  case AtomicRMWKind::maxnumf: {
+    const llvm::fltSemantics &semantic =
+        llvm::cast<FloatType>(resultType).getFloatSemantics();
+    APFloat identity = APFloat::getNaN(semantic, /*Negative=*/true);
+    return builder.getFloatAttr(resultType, identity);
+  }
   case AtomicRMWKind::addf:
   case AtomicRMWKind::addi:
   case AtomicRMWKind::maxu:
   case AtomicRMWKind::ori:
+  case AtomicRMWKind::xori:
     return builder.getZeroAttr(resultType);
   case AtomicRMWKind::andi:
     return builder.getIntegerAttr(
@@ -2379,11 +2695,21 @@ TypedAttr mlir::arith::getIdentityValueAttr(AtomicRMWKind kind, Type resultType,
     return builder.getIntegerAttr(
         resultType, APInt::getSignedMinValue(
                         llvm::cast<IntegerType>(resultType).getWidth()));
-  case AtomicRMWKind::minf:
-    return builder.getFloatAttr(
-        resultType,
-        APFloat::getInf(llvm::cast<FloatType>(resultType).getFloatSemantics(),
-                        /*Negative=*/false));
+  case AtomicRMWKind::minimumf: {
+    const llvm::fltSemantics &semantic =
+        llvm::cast<FloatType>(resultType).getFloatSemantics();
+    APFloat identity = useOnlyFiniteValue
+                           ? APFloat::getLargest(semantic, /*Negative=*/false)
+                           : APFloat::getInf(semantic, /*Negative=*/false);
+
+    return builder.getFloatAttr(resultType, identity);
+  }
+  case AtomicRMWKind::minnumf: {
+    const llvm::fltSemantics &semantic =
+        llvm::cast<FloatType>(resultType).getFloatSemantics();
+    APFloat identity = APFloat::getNaN(semantic, /*Negative=*/false);
+    return builder.getFloatAttr(resultType, identity);
+  }
   case AtomicRMWKind::mins:
     return builder.getIntegerAttr(
         resultType, APInt::getSignedMaxValue(
@@ -2404,43 +2730,55 @@ TypedAttr mlir::arith::getIdentityValueAttr(AtomicRMWKind kind, Type resultType,
   return nullptr;
 }
 
-/// Return the identity numeric value associated to the give op.
+/// Returns the identity numeric value of the given op.
 std::optional<TypedAttr> mlir::arith::getNeutralElement(Operation *op) {
   std::optional<AtomicRMWKind> maybeKind =
       llvm::TypeSwitch<Operation *, std::optional<AtomicRMWKind>>(op)
           // Floating-point operations.
           .Case([](arith::AddFOp op) { return AtomicRMWKind::addf; })
           .Case([](arith::MulFOp op) { return AtomicRMWKind::mulf; })
-          .Case([](arith::MaxFOp op) { return AtomicRMWKind::maxf; })
-          .Case([](arith::MinFOp op) { return AtomicRMWKind::minf; })
+          .Case([](arith::MaximumFOp op) { return AtomicRMWKind::maximumf; })
+          .Case([](arith::MinimumFOp op) { return AtomicRMWKind::minimumf; })
+          .Case([](arith::MaxNumFOp op) { return AtomicRMWKind::maxnumf; })
+          .Case([](arith::MinNumFOp op) { return AtomicRMWKind::minnumf; })
           // Integer operations.
           .Case([](arith::AddIOp op) { return AtomicRMWKind::addi; })
           .Case([](arith::OrIOp op) { return AtomicRMWKind::ori; })
-          .Case([](arith::XOrIOp op) { return AtomicRMWKind::ori; })
+          .Case([](arith::XOrIOp op) { return AtomicRMWKind::xori; })
           .Case([](arith::AndIOp op) { return AtomicRMWKind::andi; })
           .Case([](arith::MaxUIOp op) { return AtomicRMWKind::maxu; })
           .Case([](arith::MinUIOp op) { return AtomicRMWKind::minu; })
           .Case([](arith::MaxSIOp op) { return AtomicRMWKind::maxs; })
           .Case([](arith::MinSIOp op) { return AtomicRMWKind::mins; })
           .Case([](arith::MulIOp op) { return AtomicRMWKind::muli; })
-          .Default([](Operation *op) { return std::nullopt; });
+          .Default(std::nullopt);
   if (!maybeKind) {
-    op->emitError() << "Unknown neutral element for: " << *op;
     return std::nullopt;
+  }
+
+  bool useOnlyFiniteValue = false;
+  auto fmfOpInterface = dyn_cast<ArithFastMathInterface>(op);
+  if (fmfOpInterface) {
+    arith::FastMathFlagsAttr fmfAttr = fmfOpInterface.getFastMathFlagsAttr();
+    useOnlyFiniteValue =
+        bitEnumContainsAny(fmfAttr.getValue(), arith::FastMathFlags::ninf);
   }
 
   // Builder only used as helper for attribute creation.
   OpBuilder b(op->getContext());
   Type resultType = op->getResult(0).getType();
 
-  return getIdentityValueAttr(*maybeKind, resultType, b, op->getLoc());
+  return getIdentityValueAttr(*maybeKind, resultType, b, op->getLoc(),
+                              useOnlyFiniteValue);
 }
 
 /// Returns the identity value associated with an AtomicRMWKind op.
 Value mlir::arith::getIdentityValue(AtomicRMWKind op, Type resultType,
-                                    OpBuilder &builder, Location loc) {
-  auto attr = getIdentityValueAttr(op, resultType, builder, loc);
-  return builder.create<arith::ConstantOp>(loc, attr);
+                                    OpBuilder &builder, Location loc,
+                                    bool useOnlyFiniteValue) {
+  auto attr =
+      getIdentityValueAttr(op, resultType, builder, loc, useOnlyFiniteValue);
+  return arith::ConstantOp::create(builder, loc, attr);
 }
 
 /// Return the value obtained by applying the reduction operation kind
@@ -2449,29 +2787,35 @@ Value mlir::arith::getReductionOp(AtomicRMWKind op, OpBuilder &builder,
                                   Location loc, Value lhs, Value rhs) {
   switch (op) {
   case AtomicRMWKind::addf:
-    return builder.create<arith::AddFOp>(loc, lhs, rhs);
+    return arith::AddFOp::create(builder, loc, lhs, rhs);
   case AtomicRMWKind::addi:
-    return builder.create<arith::AddIOp>(loc, lhs, rhs);
+    return arith::AddIOp::create(builder, loc, lhs, rhs);
   case AtomicRMWKind::mulf:
-    return builder.create<arith::MulFOp>(loc, lhs, rhs);
+    return arith::MulFOp::create(builder, loc, lhs, rhs);
   case AtomicRMWKind::muli:
-    return builder.create<arith::MulIOp>(loc, lhs, rhs);
-  case AtomicRMWKind::maxf:
-    return builder.create<arith::MaxFOp>(loc, lhs, rhs);
-  case AtomicRMWKind::minf:
-    return builder.create<arith::MinFOp>(loc, lhs, rhs);
+    return arith::MulIOp::create(builder, loc, lhs, rhs);
+  case AtomicRMWKind::maximumf:
+    return arith::MaximumFOp::create(builder, loc, lhs, rhs);
+  case AtomicRMWKind::minimumf:
+    return arith::MinimumFOp::create(builder, loc, lhs, rhs);
+  case AtomicRMWKind::maxnumf:
+    return arith::MaxNumFOp::create(builder, loc, lhs, rhs);
+  case AtomicRMWKind::minnumf:
+    return arith::MinNumFOp::create(builder, loc, lhs, rhs);
   case AtomicRMWKind::maxs:
-    return builder.create<arith::MaxSIOp>(loc, lhs, rhs);
+    return arith::MaxSIOp::create(builder, loc, lhs, rhs);
   case AtomicRMWKind::mins:
-    return builder.create<arith::MinSIOp>(loc, lhs, rhs);
+    return arith::MinSIOp::create(builder, loc, lhs, rhs);
   case AtomicRMWKind::maxu:
-    return builder.create<arith::MaxUIOp>(loc, lhs, rhs);
+    return arith::MaxUIOp::create(builder, loc, lhs, rhs);
   case AtomicRMWKind::minu:
-    return builder.create<arith::MinUIOp>(loc, lhs, rhs);
+    return arith::MinUIOp::create(builder, loc, lhs, rhs);
   case AtomicRMWKind::ori:
-    return builder.create<arith::OrIOp>(loc, lhs, rhs);
+    return arith::OrIOp::create(builder, loc, lhs, rhs);
   case AtomicRMWKind::andi:
-    return builder.create<arith::AndIOp>(loc, lhs, rhs);
+    return arith::AndIOp::create(builder, loc, lhs, rhs);
+  case AtomicRMWKind::xori:
+    return arith::XOrIOp::create(builder, loc, lhs, rhs);
   // TODO: Add remaining reduction operations.
   default:
     (void)emitOptionalError(loc, "Reduction operation type not supported");

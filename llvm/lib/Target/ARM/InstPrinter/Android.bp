@@ -1,8 +1,0 @@
-cc_library_static {
-    name: "libLLVM17ARMAsmPrinter",
-    defaults: [
-        "llvm17-lib-defaults",
-        "llvm17-arm-defaults",
-    ],
-    srcs: ["*.cpp"],
-}

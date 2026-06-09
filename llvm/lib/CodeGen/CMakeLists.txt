@@ -12,8 +12,8 @@ if (DEFINED LLVM_HAVE_TF_AOT OR LLVM_HAVE_TFLITE)
       "../Analysis/models/gen-regalloc-eviction-test-model.py"
       serve
       action
-      RegallocEvictModel
-      llvm::RegallocEvictModel
+      RegAllocEvictModel
+      llvm::RegAllocEvictModel
     )
   endif()
 
@@ -21,19 +21,6 @@ if (DEFINED LLVM_HAVE_TF_AOT OR LLVM_HAVE_TFLITE)
     list(APPEND MLLinkDeps ${tensorflow_c_api} ${tensorflow_fx})
   endif()
 endif()
-
-# This provides the implementation of MVT and LLT.
-# Be careful to append deps on this, since Targets' tablegens depend on this.
-add_llvm_component_library(LLVMCodeGenTypes
-  LowLevelType.cpp
-  PARTIAL_SOURCES_INTENDED
-
-  DEPENDS
-  vt_gen
-
-  LINK_COMPONENTS
-  Support
-  )
 
 add_llvm_component_library(LLVMCodeGen
   AggressiveAntiDepBreaker.cpp
@@ -46,7 +33,9 @@ add_llvm_component_library(LLVMCodeGen
   BranchRelaxation.cpp
   BreakFalseDeps.cpp
   BasicBlockSections.cpp
+  BasicBlockPathCloning.cpp
   BasicBlockSectionsProfileReader.cpp
+  BasicBlockMatchingAndInference.cpp
   CalcSpillWeights.cpp
   CallBrPrepare.cpp
   CallingConvLower.cpp
@@ -55,7 +44,6 @@ add_llvm_component_library(LLVMCodeGen
   CFIInstrInserter.cpp
   CodeGen.cpp
   CodeGenCommonISel.cpp
-  CodeGenPassBuilder.cpp
   CodeGenPrepare.cpp
   CommandFlags.cpp
   ComplexDeinterleavingPass.cpp
@@ -63,13 +51,13 @@ add_llvm_component_library(LLVMCodeGen
   DeadMachineInstructionElim.cpp
   DetectDeadLanes.cpp
   DFAPacketizer.cpp
+  DroppedVariableStatsMIR.cpp
   DwarfEHPrepare.cpp
   EarlyIfConversion.cpp
   EdgeBundles.cpp
-  EHContGuardCatchret.cpp
+  EHContGuardTargets.cpp
   ExecutionDomainFix.cpp
-  ExpandLargeDivRem.cpp
-  ExpandLargeFpConvert.cpp
+  ExpandIRInsts.cpp
   ExpandMemCmp.cpp
   ExpandPostRAPseudos.cpp
   ExpandReductions.cpp
@@ -79,15 +67,19 @@ add_llvm_component_library(LLVMCodeGen
   FinalizeISel.cpp
   FixupStatepointCallerSaved.cpp
   FuncletLayout.cpp
+  MachineFunctionAnalysis.cpp
   GCMetadata.cpp
   GCMetadataPrinter.cpp
   GCRootLowering.cpp
   GlobalMerge.cpp
+  GlobalMergeFunctions.cpp
   HardwareLoops.cpp
   IfConversion.cpp
   ImplicitNullChecks.cpp
   IndirectBrExpandPass.cpp
+  InitUndef.cpp
   InlineSpiller.cpp
+  InsertCodePrefetch.cpp
   InterferenceCache.cpp
   InterleavedAccessPass.cpp
   InterleavedLoadCombinePass.cpp
@@ -97,6 +89,7 @@ add_llvm_component_library(LLVMCodeGen
   LatencyPriorityQueue.cpp
   LazyMachineBlockFrequencyInfo.cpp
   LexicalScopes.cpp
+  LibcallLoweringInfo.cpp
   LiveDebugVariables.cpp
   LiveIntervals.cpp
   LiveInterval.cpp
@@ -110,22 +103,25 @@ add_llvm_component_library(LLVMCodeGen
   LiveRegUnits.cpp
   LiveStacks.cpp
   LiveVariables.cpp
-  LLVMTargetMachine.cpp
+  CodeGenTargetMachineImpl.cpp
   LocalStackSlotAllocation.cpp
   LoopTraversal.cpp
   LowLevelTypeUtils.cpp
   LowerEmuTLS.cpp
   MachineBasicBlock.cpp
   MachineBlockFrequencyInfo.cpp
+  MachineBlockHashInfo.cpp
   MachineBlockPlacement.cpp
   MachineBranchProbabilityInfo.cpp
   MachineCFGPrinter.cpp
   MachineCombiner.cpp
+  MachineConvergenceVerifier.cpp
   MachineCopyPropagation.cpp
   MachineCSE.cpp
   MachineCheckDebugify.cpp
   MachineCycleAnalysis.cpp
   MachineDebugify.cpp
+  MachineDomTreeUpdater.cpp
   MachineDominanceFrontier.cpp
   MachineDominators.cpp
   MachineFrameInfo.cpp
@@ -162,8 +158,9 @@ add_llvm_component_library(LLVMCodeGen
   MIRFSDiscriminator.cpp
   MIRSampleProfile.cpp
   MIRYamlMapping.cpp
-  MLRegallocEvictAdvisor.cpp
-  MLRegallocPriorityAdvisor.cpp
+  MIR2Vec.cpp
+  MLRegAllocEvictAdvisor.cpp
+  MLRegAllocPriorityAdvisor.cpp
   ModuloSchedule.cpp
   MultiHazardRecognizer.cpp
   PatchableFunction.cpp
@@ -173,7 +170,6 @@ add_llvm_component_library(LLVMCodeGen
   MacroFusion.cpp
   NonRelocatableStringpool.cpp
   OptimizePHIs.cpp
-  ParallelCG.cpp
   PeepholeOptimizer.cpp
   PHIElimination.cpp
   PHIEliminationUtils.cpp
@@ -200,6 +196,7 @@ add_llvm_component_library(LLVMCodeGen
   RegisterCoalescer.cpp
   RegisterPressure.cpp
   RegisterScavenging.cpp
+  GCEmptyBasicBlocks.cpp
   RemoveRedundantDebugValues.cpp
   RenameIndependentSubregs.cpp
   MachineStableHash.cpp
@@ -209,6 +206,7 @@ add_llvm_component_library(LLVMCodeGen
   RegisterUsageInfo.cpp
   RegUsageInfoCollector.cpp
   RegUsageInfoPropagate.cpp
+  RemoveLoadsIntoFakeUses.cpp
   ReplaceWithVeclib.cpp
   ResetMachineFunctionPass.cpp
   RegisterBank.cpp
@@ -233,6 +231,8 @@ add_llvm_component_library(LLVMCodeGen
   StackMaps.cpp
   StackProtector.cpp
   StackSlotColoring.cpp
+  StaticDataSplitter.cpp
+  StaticDataAnnotator.cpp
   SwiftErrorValueTracking.cpp
   SwitchLoweringUtils.cpp
   TailDuplication.cpp
@@ -253,6 +253,8 @@ add_llvm_component_library(LLVMCodeGen
   VLIWMachineScheduler.cpp
   VirtRegMap.cpp
   WasmEHPrepare.cpp
+  WindowScheduler.cpp
+  WindowsSecureHotPatching.cpp
   WinEHPrepare.cpp
   XRayInstrumentation.cpp
   ${GeneratedMLSources}
@@ -269,12 +271,14 @@ add_llvm_component_library(LLVMCodeGen
 
   DEPENDS
   intrinsics_gen
+  vt_gen
   ${MLDeps}
 
   LINK_COMPONENTS
   Analysis
   BitReader
   BitWriter
+  CGData
   CodeGenTypes
   Core
   MC

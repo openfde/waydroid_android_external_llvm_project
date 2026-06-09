@@ -13,8 +13,6 @@ enum {
 typedef struct { void *a, *b; } pointer_pair_t;
 typedef struct { void *a, *b, *c, *d; } pointer_quad_t;
 
-// rdar://13489679
-
 extern _Atomic(_Bool) a_bool;
 extern _Atomic(float) a_float;
 extern _Atomic(void*) a_pointer;
@@ -59,7 +57,7 @@ void test3(pointer_pair_t pair) {
 }
 
 // CHECK-LABEL:define{{.*}} void @test4(
-// CHECK-SAME: ptr noundef [[QUAD:%.*]])
+// CHECK-SAME: ptr dead_on_return noundef [[QUAD:%.*]])
 // CHECK:      [[QUAD_INDIRECT_ADDR:%.*]] = alloca ptr, align 8
 // CHECK-NEXT: [[TEMP:%.*]] = alloca [[QUAD_T:%.*]], align 8
 // CHECK-NEXT: store ptr [[QUAD]], ptr [[QUAD_INDIRECT_ADDR]]

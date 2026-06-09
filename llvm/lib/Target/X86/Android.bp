@@ -1,10 +1,13 @@
 cc_library_static {
-    name: "libLLVM17X86CodeGen",
+    name: "libLLVM22X86CodeGen",
     defaults: [
-        "llvm17-lib-defaults",
-        "llvm17-x86-defaults",
+        "llvm22-lib-defaults",
+        "llvm22-x86-defaults",
     ],
-    srcs: ["*.cpp"],
+    srcs: [
+        "*.cpp",
+        "GISel/*.cpp",
+    ],
 
     // b/llvm/31559947, b/llvm/31938382 clang-tidy segmentation fault.
     tidy_checks: [
@@ -15,13 +18,13 @@ cc_library_static {
 }
 
 cc_defaults {
-    name: "llvm17-x86-defaults",
-    generated_headers: ["llvm17-gen-x86"],
-    static_libs: ["llvm17-x86-headers"],
+    name: "llvm22-x86-defaults",
+    generated_headers: ["llvm22-gen-x86"],
+    static_libs: ["llvm22-x86-headers"],
 }
 
 cc_library_static {
-    name: "llvm17-x86-headers",
+    name: "llvm22-x86-headers",
     vendor_available: true,
     host_supported: true,
     target: {
@@ -32,8 +35,8 @@ cc_library_static {
     export_include_dirs: ["."],
 }
 
-llvm17_tblgen {
-    name: "llvm17-gen-x86",
+llvm22_tblgen {
+    name: "llvm22-gen-x86",
     in: "X86.td",
     outs: [
         "X86GenAsmMatcher.inc",
@@ -47,10 +50,11 @@ llvm17_tblgen {
         "X86GenSubtargetInfo.inc",
         "X86GenCallingConv.inc",
         "X86GenRegisterBank.inc",
-        "X86GenEVEX2VEXTables.inc",
+        "X86GenInstrMapping.inc",
         "X86GenGlobalISel.inc",
         "X86GenMnemonicTables.inc",
         "X86GenFoldTables.inc",
+        "X86GenPreLegalizeGICombiner.inc",
     ],
 }
 

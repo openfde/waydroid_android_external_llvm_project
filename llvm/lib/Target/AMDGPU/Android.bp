@@ -1,25 +1,24 @@
 cc_library_static {
-    name: "libLLVM17AMDGPUCodeGen",
+    name: "libLLVM22AMDGPUCodeGen",
     defaults: [
-        "llvm17-lib-defaults",
-        "llvm17-amdgpu-defaults",
+        "llvm22-lib-defaults",
+        "llvm22-amdgpu-defaults",
     ],
     srcs: ["*.cpp"],
 }
 
 cc_defaults {
-    name: "llvm17-amdgpu-defaults",
+    name: "llvm22-amdgpu-defaults",
     generated_headers: [
-        "llvm17-gen-amdgpu",
-        "llvm17-gen-amdgpuisel",
-        "llvm17-gen-instcombine",
-        "llvm17-gen-r600",
+        "llvm22-gen-amdgpu",
+        "llvm22-gen-amdgpuisel",
+        "llvm22-gen-r600",
     ],
-    static_libs: ["llvm17-amdgpu-headers"],
+    static_libs: ["llvm22-amdgpu-headers"],
 }
 
 cc_library_static {
-    name: "llvm17-amdgpu-headers",
+    name: "llvm22-amdgpu-headers",
     host_supported: true,
     vendor_available: true,
     target: {
@@ -30,8 +29,8 @@ cc_library_static {
     export_include_dirs: ["."],
 }
 
-llvm17_tblgen {
-    name: "llvm17-gen-amdgpu",
+llvm22_tblgen {
+    name: "llvm22-gen-amdgpu",
     in: "AMDGPU.td",
     outs: [
         "AMDGPUGenRegisterInfo.inc",
@@ -42,17 +41,16 @@ llvm17_tblgen {
         "AMDGPUGenDAGISel.inc",
         "AMDGPUGenCallingConv.inc",
         "AMDGPUGenSubtargetInfo.inc",
-        "AMDGPUGenIntrinsicEnums.inc",
-        "AMDGPUGenIntrinsicImpl.inc",
         "AMDGPUGenRegisterBank.inc",
         "AMDGPUGenMCPseudoLowering.inc",
         "AMDGPUGenSearchableTables.inc",
         "AMDGPUGenDisassemblerTables.inc",
+        "AMDGPUGenSDNodeInfo.inc",
     ],
 }
 
-llvm17_tblgen {
-    name: "llvm17-gen-amdgpuisel",
+llvm22_tblgen {
+    name: "llvm22-gen-amdgpuisel",
     in: "AMDGPUGISel.td",
     outs: [
         "AMDGPUGenGlobalISel.inc",
@@ -62,14 +60,8 @@ llvm17_tblgen {
     ],
 }
 
-llvm17_tblgen {
-    name: "llvm17-gen-instcombine",
-    in: "InstCombineTables.td",
-    outs: ["InstCombineTables.inc"],
-}
-
-llvm17_tblgen {
-    name: "llvm17-gen-r600",
+llvm22_tblgen {
+    name: "llvm22-gen-r600",
     in: "R600.td",
     outs: [
         "R600GenAsmWriter.inc",

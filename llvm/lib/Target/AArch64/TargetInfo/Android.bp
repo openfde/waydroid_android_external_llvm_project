@@ -1,8 +1,8 @@
 cc_library_static {
-    name: "libLLVM17AArch64Info",
+    name: "libLLVM22AArch64Info",
     defaults: [
-        "llvm17-lib-defaults",
-        "llvm17-aarch64-defaults",
+        "llvm22-lib-defaults",
+        "llvm22-aarch64-defaults",
     ],
     srcs: ["*.cpp"],
 }

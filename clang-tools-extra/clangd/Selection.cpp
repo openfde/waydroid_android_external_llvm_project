@@ -62,7 +62,8 @@ void recordMetrics(const SelectionTree &S, const LangOptions &Lang) {
 }
 
 // Return the range covering a node and all its children.
-SourceRange getSourceRange(const DynTypedNode &N) {
+SourceRange getSourceRange(const DynTypedNode &N,
+                           bool IncludeQualifier = false) {
   // MemberExprs to implicitly access anonymous fields should not claim any
   // tokens for themselves. Given:
   //   struct A { struct { int b; }; };
@@ -80,7 +81,7 @@ SourceRange getSourceRange(const DynTypedNode &N) {
                  ? getSourceRange(DynTypedNode::create(*ME->getBase()))
                  : SourceRange();
   }
-  return N.getSourceRange();
+  return N.getSourceRange(IncludeQualifier);
 }
 
 // An IntervalSet maintains a set of disjoint subranges of an array.
@@ -635,12 +636,17 @@ public:
     if (llvm::isa_and_nonnull<TranslationUnitDecl>(X))
       return Base::TraverseDecl(X); // Already pushed by constructor.
     // Base::TraverseDecl will suppress children, but not this node itself.
-    if (X && X->isImplicit())
-      return true;
+    if (X && X->isImplicit()) {
+      // Most implicit nodes have only implicit children and can be skipped.
+      // However there are exceptions (`void foo(Concept auto x)`), and
+      // the base implementation knows how to find them.
+      return Base::TraverseDecl(X);
+    }
     return traverseNode(X, [&] { return Base::TraverseDecl(X); });
   }
-  bool TraverseTypeLoc(TypeLoc X) {
-    return traverseNode(&X, [&] { return Base::TraverseTypeLoc(X); });
+  bool TraverseTypeLoc(TypeLoc X, bool TraverseQualifier = true) {
+    return traverseNode(
+        &X, [&] { return Base::TraverseTypeLoc(X, TraverseQualifier); });
   }
   bool TraverseTemplateArgumentLoc(const TemplateArgumentLoc &X) {
     return traverseNode(&X,
@@ -659,6 +665,9 @@ public:
   }
   bool TraverseAttr(Attr *X) {
     return traverseNode(X, [&] { return Base::TraverseAttr(X); });
+  }
+  bool TraverseConceptReference(ConceptReference *X) {
+    return traverseNode(X, [&] { return Base::TraverseConceptReference(X); });
   }
   // Stmt is the same, but this form allows the data recursion optimization.
   bool dataTraverseStmtPre(Stmt *X) {
@@ -683,7 +692,8 @@ public:
   // This means we'd never see 'int' in 'const int'! Work around that here.
   // (The reason for the behavior is to avoid traversing the nested Type twice,
   // but we ignore TraverseType anyway).
-  bool TraverseQualifiedTypeLoc(QualifiedTypeLoc QX) {
+  bool TraverseQualifiedTypeLoc(QualifiedTypeLoc QX,
+                                bool TraverseQualifier = true) {
     return traverseNode<TypeLoc>(
         &QX, [&] { return TraverseTypeLoc(QX.getUnqualifiedLoc()); });
   }
@@ -691,7 +701,7 @@ public:
     return traverseNode(&PL, [&] { return Base::TraverseObjCProtocolLoc(PL); });
   }
   // Uninteresting parts of the AST that don't have locations within them.
-  bool TraverseNestedNameSpecifier(NestedNameSpecifier *) { return true; }
+  bool TraverseNestedNameSpecifier(NestedNameSpecifier) { return true; }
   bool TraverseType(QualType) { return true; }
 
   // The DeclStmt for the loop variable claims to cover the whole range
@@ -791,7 +801,7 @@ private:
   // An optimization for a common case: nodes outside macro expansions that
   // don't intersect the selection may be recursively skipped.
   bool canSafelySkipNode(const DynTypedNode &N) {
-    SourceRange S = getSourceRange(N);
+    SourceRange S = getSourceRange(N, /*IncludeQualifier=*/true);
     if (auto *TL = N.get<TypeLoc>()) {
       // FIXME: TypeLoc::getBeginLoc()/getEndLoc() are pretty fragile
       // heuristics. We should consider only pruning critical TypeLoc nodes, to
@@ -947,6 +957,18 @@ private:
       if (auto FTL = TL->getAs<FunctionTypeLoc>()) {
         claimRange(SourceRange(FTL.getLParenLoc(), FTL.getEndLoc()), Result);
         return;
+      }
+      if (auto ATL = TL->getAs<AttributedTypeLoc>()) {
+        // For attributed function types like `int foo() [[attr]]`, the
+        // AttributedTypeLoc's range includes the function name. We want to
+        // allow the function name to be associated with the FunctionDecl
+        // rather than the AttributedTypeLoc, so we only claim the attribute
+        // range itself.
+        if (ATL.getModifiedLoc().getAs<FunctionTypeLoc>()) {
+          // Only claim the attribute's source range, not the whole type.
+          claimRange(ATL.getLocalSourceRange(), Result);
+          return;
+        }
       }
     }
     claimRange(getSourceRange(N), Result);
@@ -1106,6 +1128,9 @@ const DeclContext &SelectionTree::Node::getDeclContext() const {
           return *DC;
       return *Current->getLexicalDeclContext();
     }
+    if (const auto *LE = CurrentNode->ASTNode.get<LambdaExpr>())
+      if (CurrentNode != this)
+        return *LE->getCallOperator();
   }
   llvm_unreachable("A tree must always be rooted at TranslationUnitDecl.");
 }
