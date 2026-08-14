@@ -1,7 +1,11 @@
 cc_library_static {
-    name: "libLLVM17Vectorize",
+    name: "libLLVM22Vectorize",
     defaults: [
-        "llvm17-lib-defaults",
+        "llvm22-lib-defaults",
     ],
-    srcs: ["*.cpp"],
+    srcs: [
+        "*.cpp",
+        "SandboxVectorizer/*.cpp",
+        "SandboxVectorizer/Passes/*.cpp",
+    ],
 }

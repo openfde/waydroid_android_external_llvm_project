@@ -1,7 +1,7 @@
 cc_library_static {
-    name: "libLLVM17SelectionDAG",
+    name: "libLLVM22SelectionDAG",
     defaults: [
-        "llvm17-lib-defaults",
+        "llvm22-lib-defaults",
     ],
     srcs: ["*.cpp"],
 }

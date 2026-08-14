@@ -1,12 +1,17 @@
 cc_binary_host {
-    name: "llvm17-tblgen",
-    defaults: ["llvm17-defaults-no-generated-headers"],
-    srcs: ["*.cpp"],
+    // llvm-min-tablegen only contains a subset of backends necessary to
+    // build llvm/include. It must not depend on TableGen, as
+    // TableGen depends on this already to generate things such as
+    // ValueType definitions.
+    name: "llvm22-min-tblgen",
+    defaults: ["llvm22-defaults-no-generated-headers"],
+    srcs: [
+        "llvm-min-tblgen.cpp",
+        // partial list of sources is intentional
+    ],
 
-    static_libs: [
-        "libLLVM17TableGenGlobalISel",
-        "libLLVM17TableGen",
-        "libLLVM17Support",
+    whole_static_libs: [
+        "libLLVM22TableGenBasic",
     ],
 
     host_ldlibs: ["-lm"],
@@ -14,8 +19,8 @@ cc_binary_host {
         windows: {
             enabled: false,
         },
-        // llvm17-defaults turns off host builds by default, turn it back on for
-        // modules that are used to build llvm17-tblgen
+        // llvm22-defaults turns off host builds by default, turn it back on for
+        // modules that are used to build llvm22-tblgen
         host: {
             enabled: true,
         },
@@ -32,6 +37,97 @@ cc_binary_host {
             ],
         },
     },
+}
+
+cc_binary_host {
+    name: "llvm22-tblgen",
+    defaults: ["llvm22-defaults-no-generated-headers"],
+    header_libs: ["llvm22-headers"],
+    srcs: [
+        "AsmMatcherEmitter.cpp",
+        "AsmWriterEmitter.cpp",
+        "CallingConvEmitter.cpp",
+        "CodeEmitterGen.cpp",
+        "CodeGenMapTable.cpp",
+        "CompressInstEmitter.cpp",
+        "CTagsEmitter.cpp",
+        "DAGISelEmitter.cpp",
+        "DAGISelMatcher.cpp",
+        "DAGISelMatcherEmitter.cpp",
+        "DAGISelMatcherGen.cpp",
+        "DAGISelMatcherOpt.cpp",
+        "DecoderEmitter.cpp",
+        "DecoderTableEmitter.cpp",
+        "DecoderTree.cpp",
+        "DFAEmitter.cpp",
+        "DFAPacketizerEmitter.cpp",
+        "DisassemblerEmitter.cpp",
+        "DXILEmitter.cpp",
+        "ExegesisEmitter.cpp",
+        "FastISelEmitter.cpp",
+        "GlobalISelCombinerEmitter.cpp",
+        "GlobalISelEmitter.cpp",
+        "InstrDocsEmitter.cpp",
+        "InstrInfoEmitter.cpp",
+        "llvm-tblgen.cpp",
+        "MacroFusionPredicatorEmitter.cpp",
+        "OptionParserEmitter.cpp",
+        "OptionRSTEmitter.cpp",
+        "PseudoLoweringEmitter.cpp",
+        "RegisterBankEmitter.cpp",
+        "RegisterInfoEmitter.cpp",
+        "SDNodeInfoEmitter.cpp",
+        "SearchableTableEmitter.cpp",
+        "SubtargetEmitter.cpp",
+        "WebAssemblyDisassemblerEmitter.cpp",
+        "X86InstrMappingEmitter.cpp",
+        "X86DisassemblerTables.cpp",
+        "X86FoldTablesEmitter.cpp",
+        "X86MnemonicTables.cpp",
+        "X86ModRMFilters.cpp",
+        "X86RecognizableInstr.cpp",
+    ],
+
+    whole_static_libs: [
+        "libLLVM22TableGenBasic",
+        "libLLVM22TableGenCommon",
+    ],
+
+    host_ldlibs: ["-lm"],
+    target: {
+        windows: {
+            enabled: false,
+        },
+        // llvm22-defaults turns off host builds by default, turn it back on for
+        // modules that are used to build llvm22-tblgen
+        host: {
+            enabled: true,
+        },
+        darwin: {
+            host_ldlibs: [
+                "-lpthread",
+                "-ldl",
+            ],
+        },
+        linux: {
+            host_ldlibs: [
+                "-lpthread",
+                "-ldl",
+            ],
+        },
+    },
+}
+
+cc_library_headers {
+    name: "llvm22-tblgen-headers",
+    host_supported: true,
+    vendor_available: true,
+    target: {
+        windows: {
+            enabled: true,
+        },
+    },
+    export_include_dirs: ["."],
 }
 
 subdirs = ["*"]

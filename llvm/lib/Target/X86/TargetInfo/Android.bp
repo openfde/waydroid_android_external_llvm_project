@@ -1,8 +1,8 @@
 cc_library_static {
-    name: "libLLVM17X86Info",
+    name: "libLLVM22X86Info",
     defaults: [
-        "llvm17-lib-defaults",
-        "llvm17-x86-defaults",
+        "llvm22-lib-defaults",
+        "llvm22-x86-defaults",
     ],
     srcs: ["*.cpp"],
 }

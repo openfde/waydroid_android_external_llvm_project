@@ -1,8 +1,8 @@
 cc_library_static {
-    name: "libLLVM17ARMCodeGen",
+    name: "libLLVM22ARMCodeGen",
     defaults: [
-        "llvm17-lib-defaults",
-        "llvm17-arm-defaults",
+        "llvm22-lib-defaults",
+        "llvm22-arm-defaults",
     ],
     srcs: ["*.cpp"],
 
@@ -14,13 +14,16 @@ cc_library_static {
 }
 
 cc_defaults {
-    name: "llvm17-arm-defaults",
-    generated_headers: ["llvm17-gen-arm"],
-    static_libs: ["llvm17-arm-headers"],
+    name: "llvm22-arm-defaults",
+    generated_headers: [
+        "llvm22-gen-arm",
+        "llvm22-gen-arm-target-def",
+    ],
+    static_libs: ["llvm22-arm-headers"],
 }
 
 cc_library_static {
-    name: "llvm17-arm-headers",
+    name: "llvm22-arm-headers",
     vendor_available: true,
     host_supported: true,
     target: {
@@ -31,8 +34,8 @@ cc_library_static {
     export_include_dirs: ["."],
 }
 
-llvm17_tblgen {
-    name: "llvm17-gen-arm",
+llvm22_tblgen {
+    name: "llvm22-gen-arm",
     in: "ARM.td",
     outs: [
         "ARMGenRegisterInfo.inc",
@@ -50,6 +53,7 @@ llvm17_tblgen {
         "ARMGenRegisterBank.inc",
         "ARMGenGlobalISel.inc",
         "ARMGenSystemRegister.inc",
+        "ARMGenSDNodeInfo.inc",
     ],
 }
 

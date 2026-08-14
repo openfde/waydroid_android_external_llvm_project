@@ -377,6 +377,18 @@ define float @ldexp_reassoc_ldexp_reassoc(float %x, i32 %a, i32 %b) {
   ret float %ldexp1
 }
 
+define float @ldexp_reassoc_nsz_ldexp_reassoc_nsz(float %x, i32 %a, i32 %b) {
+; CHECK-LABEL: define float @ldexp_reassoc_nsz_ldexp_reassoc_nsz
+; CHECK-SAME: (float [[X:%.*]], i32 [[A:%.*]], i32 [[B:%.*]]) {
+; CHECK-NEXT:    [[TMP1:%.*]] = add i32 [[A]], [[B]]
+; CHECK-NEXT:    [[LDEXP1:%.*]] = call reassoc nsz float @llvm.ldexp.f32.i32(float [[X]], i32 [[TMP1]])
+; CHECK-NEXT:    ret float [[LDEXP1]]
+;
+  %ldexp0 = call reassoc nsz float @llvm.ldexp.f32.i32(float %x, i32 %a)
+  %ldexp1 = call reassoc nsz float @llvm.ldexp.f32.i32(float %ldexp0, i32 %b)
+  ret float %ldexp1
+}
+
 ; Test that we or the inner and outer flags
 define float @ldexp_reassoc_ldexp_reassoc_preserve_flags(float %x, i32 %a, i32 %b) {
 ; CHECK-LABEL: define float @ldexp_reassoc_ldexp_reassoc_preserve_flags
@@ -432,7 +444,7 @@ define float @ldexp_ldexp_different_exp_type(float %x, i32 %a, i64 %b) {
 define float @ldexp_ldexp_constants(float %x) {
 ; CHECK-LABEL: define float @ldexp_ldexp_constants
 ; CHECK-SAME: (float [[X:%.*]]) {
-; CHECK-NEXT:    [[LDEXP1:%.*]] = call reassoc float @llvm.ldexp.f32.i32(float [[X]], i32 32)
+; CHECK-NEXT:    [[LDEXP1:%.*]] = fmul reassoc float [[X]], 0x41F0000000000000
 ; CHECK-NEXT:    ret float [[LDEXP1]]
 ;
   %ldexp0 = call reassoc float @llvm.ldexp.f32.i32(float %x, i32 8)
@@ -440,11 +452,43 @@ define float @ldexp_ldexp_constants(float %x) {
   ret float %ldexp1
 }
 
+define float @ldexp_ldexp_constants_nsz(float %x) {
+; CHECK-LABEL: define float @ldexp_ldexp_constants_nsz
+; CHECK-SAME: (float [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP1:%.*]] = fmul reassoc nsz float [[X]], 0x41F0000000000000
+; CHECK-NEXT:    ret float [[LDEXP1]]
+;
+  %ldexp0 = call reassoc nsz float @llvm.ldexp.f32.i32(float %x, i32 8)
+  %ldexp1 = call reassoc nsz float @llvm.ldexp.f32.i32(float %ldexp0, i32 24)
+  ret float %ldexp1
+}
+
+define float @ldexp_ldexp_constants_nsz0(float %x) {
+; CHECK-LABEL: define float @ldexp_ldexp_constants_nsz0
+; CHECK-SAME: (float [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP1:%.*]] = fmul reassoc float [[X]], 0x41F0000000000000
+; CHECK-NEXT:    ret float [[LDEXP1]]
+;
+  %ldexp0 = call reassoc nsz float @llvm.ldexp.f32.i32(float %x, i32 8)
+  %ldexp1 = call reassoc float @llvm.ldexp.f32.i32(float %ldexp0, i32 24)
+  ret float %ldexp1
+}
+
+define float @ldexp_ldexp_constants_nsz1(float %x) {
+; CHECK-LABEL: define float @ldexp_ldexp_constants_nsz1
+; CHECK-SAME: (float [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP1:%.*]] = fmul reassoc nsz float [[X]], 0x41F0000000000000
+; CHECK-NEXT:    ret float [[LDEXP1]]
+;
+  %ldexp0 = call reassoc float @llvm.ldexp.f32.i32(float %x, i32 8)
+  %ldexp1 = call reassoc nsz float @llvm.ldexp.f32.i32(float %ldexp0, i32 24)
+  ret float %ldexp1
+}
+
 define float @ldexp_ldexp_opposite_constants(float %x) {
 ; CHECK-LABEL: define float @ldexp_ldexp_opposite_constants
 ; CHECK-SAME: (float [[X:%.*]]) {
-; CHECK-NEXT:    [[LDEXP1:%.*]] = call reassoc float @llvm.ldexp.f32.i32(float [[X]], i32 0)
-; CHECK-NEXT:    ret float [[LDEXP1]]
+; CHECK-NEXT:    ret float [[X]]
 ;
   %ldexp0 = call reassoc float @llvm.ldexp.f32.i32(float %x, i32 8)
   %ldexp1 = call reassoc float @llvm.ldexp.f32.i32(float %ldexp0, i32 -8)
@@ -454,8 +498,7 @@ define float @ldexp_ldexp_opposite_constants(float %x) {
 define float @ldexp_ldexp_negated_variable_reassoc(float %x, i32 %a) {
 ; CHECK-LABEL: define float @ldexp_ldexp_negated_variable_reassoc
 ; CHECK-SAME: (float [[X:%.*]], i32 [[A:%.*]]) {
-; CHECK-NEXT:    [[LDEXP1:%.*]] = call reassoc float @llvm.ldexp.f32.i32(float [[X]], i32 0)
-; CHECK-NEXT:    ret float [[LDEXP1]]
+; CHECK-NEXT:    ret float [[X]]
 ;
   %ldexp0 = call reassoc float @llvm.ldexp.f32.i32(float %x, i32 %a)
   %neg.a = sub i32 0, %a
@@ -583,8 +626,7 @@ define float @ldexp_reassoc_ldexp_reassoc_0(float %x, i32 %y) {
 define float @ldexp_ldexp_0(float %x, i32 %y) {
 ; CHECK-LABEL: define float @ldexp_ldexp_0
 ; CHECK-SAME: (float [[X:%.*]], i32 [[Y:%.*]]) {
-; CHECK-NEXT:    [[LDEXP0:%.*]] = call float @llvm.ldexp.f32.i32(float [[X]], i32 0)
-; CHECK-NEXT:    [[LDEXP1:%.*]] = call float @llvm.ldexp.f32.i32(float [[LDEXP0]], i32 [[Y]])
+; CHECK-NEXT:    [[LDEXP1:%.*]] = call float @llvm.ldexp.f32.i32(float [[X]], i32 [[Y]])
 ; CHECK-NEXT:    ret float [[LDEXP1]]
 ;
   %ldexp0 = call float @llvm.ldexp.f32.i32(float %x, i32 0)
@@ -592,5 +634,467 @@ define float @ldexp_ldexp_0(float %x, i32 %y) {
   ret float %ldexp1
 }
 
+;---------------------------------------------------------------------
+; ldexp(x, k) -> fmul x, 2**k
+;---------------------------------------------------------------------
+
+define float @ldexp_neg150(float %x) {
+; CHECK-LABEL: define float @ldexp_neg150
+; CHECK-SAME: (float [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP:%.*]] = call float @llvm.ldexp.f32.i32(float [[X]], i32 -150)
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %ldexp = call float @llvm.ldexp.f32.i32(float %x, i32 -150)
+  ret float %ldexp
+}
+
+define float @ldexp_neg149(float %x) {
+; CHECK-LABEL: define float @ldexp_neg149
+; CHECK-SAME: (float [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP:%.*]] = fmul float [[X]], 0x36A0000000000000
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %ldexp = call float @llvm.ldexp.f32.i32(float %x, i32 -149)
+  ret float %ldexp
+}
+
+define float @ldexp_neg148(float %x) {
+; CHECK-LABEL: define float @ldexp_neg148
+; CHECK-SAME: (float [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP:%.*]] = fmul float [[X]], 0x36B0000000000000
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %ldexp = call float @llvm.ldexp.f32.i32(float %x, i32 -148)
+  ret float %ldexp
+}
+
+define float @ldexp_neg127(float %x) {
+; CHECK-LABEL: define float @ldexp_neg127
+; CHECK-SAME: (float [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP:%.*]] = fmul float [[X]], 0x3800000000000000
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %ldexp = call float @llvm.ldexp.f32.i32(float %x, i32 -127)
+  ret float %ldexp
+}
+
+define float @ldexp_neg126(float %x) {
+; CHECK-LABEL: define float @ldexp_neg126
+; CHECK-SAME: (float [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP:%.*]] = fmul float [[X]], 0x3810000000000000
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %ldexp = call float @llvm.ldexp.f32.i32(float %x, i32 -126)
+  ret float %ldexp
+}
+
+define float @ldexp_neg125(float %x) {
+; CHECK-LABEL: define float @ldexp_neg125
+; CHECK-SAME: (float [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP:%.*]] = fmul float [[X]], 0x3820000000000000
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %ldexp = call float @llvm.ldexp.f32.i32(float %x, i32 -125)
+  ret float %ldexp
+}
+
+define float @ldexp_neg16(float %x) {
+; CHECK-LABEL: define float @ldexp_neg16
+; CHECK-SAME: (float [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP:%.*]] = fmul float [[X]], 0x3EF0000000000000
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %ldexp = call float @llvm.ldexp.f32.i32(float %x, i32 -16)
+  ret float %ldexp
+}
+
+define float @ldexp_neg8(float %x) {
+; CHECK-LABEL: define float @ldexp_neg8
+; CHECK-SAME: (float [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP:%.*]] = fmul float [[X]], 3.906250e-03
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %ldexp = call float @llvm.ldexp.f32.i32(float %x, i32 -8)
+  ret float %ldexp
+}
+
+define float @ldexp_neg4(float %x) {
+; CHECK-LABEL: define float @ldexp_neg4
+; CHECK-SAME: (float [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP:%.*]] = fmul float [[X]], 6.250000e-02
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %ldexp = call float @llvm.ldexp.f32.i32(float %x, i32 -4)
+  ret float %ldexp
+}
+
+define float @ldexp_neg2(float %x) {
+; CHECK-LABEL: define float @ldexp_neg2
+; CHECK-SAME: (float [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP:%.*]] = fmul float [[X]], 2.500000e-01
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %ldexp = call float @llvm.ldexp.f32.i32(float %x, i32 -2)
+  ret float %ldexp
+}
+
+define float @ldexp_neg1(float %x) {
+; CHECK-LABEL: define float @ldexp_neg1
+; CHECK-SAME: (float [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP:%.*]] = fmul float [[X]], 5.000000e-01
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %ldexp = call float @llvm.ldexp.f32.i32(float %x, i32 -1)
+  ret float %ldexp
+}
+
+define float @ldexp_0(float %x) {
+; CHECK-LABEL: define float @ldexp_0
+; CHECK-SAME: (float [[X:%.*]]) {
+; CHECK-NEXT:    ret float [[X]]
+;
+  %ldexp = call float @llvm.ldexp.f32.i32(float %x, i32 0)
+  ret float %ldexp
+}
+
+define float @ldexp_1(float %x) {
+; CHECK-LABEL: define float @ldexp_1
+; CHECK-SAME: (float [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP:%.*]] = fmul float [[X]], 2.000000e+00
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %ldexp = call float @llvm.ldexp.f32.i32(float %x, i32 1)
+  ret float %ldexp
+}
+
+define float @ldexp_2(float %x) {
+; CHECK-LABEL: define float @ldexp_2
+; CHECK-SAME: (float [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP:%.*]] = fmul float [[X]], 4.000000e+00
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %ldexp = call float @llvm.ldexp.f32.i32(float %x, i32 2)
+  ret float %ldexp
+}
+
+define float @ldexp_3(float %x) {
+; CHECK-LABEL: define float @ldexp_3
+; CHECK-SAME: (float [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP:%.*]] = fmul float [[X]], 8.000000e+00
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %ldexp = call float @llvm.ldexp.f32.i32(float %x, i32 3)
+  ret float %ldexp
+}
+
+define float @ldexp_10(float %x) {
+; CHECK-LABEL: define float @ldexp_10
+; CHECK-SAME: (float [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP:%.*]] = fmul float [[X]], 1.024000e+03
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %ldexp = call float @llvm.ldexp.f32.i32(float %x, i32 10)
+  ret float %ldexp
+}
+
+define float @ldexp_125(float %x) {
+; CHECK-LABEL: define float @ldexp_125
+; CHECK-SAME: (float [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP:%.*]] = fmul float [[X]], 0x47C0000000000000
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %ldexp = call float @llvm.ldexp.f32.i32(float %x, i32 125)
+  ret float %ldexp
+}
+
+define float @ldexp_126(float %x) {
+; CHECK-LABEL: define float @ldexp_126
+; CHECK-SAME: (float [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP:%.*]] = fmul float [[X]], 0x47D0000000000000
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %ldexp = call float @llvm.ldexp.f32.i32(float %x, i32 126)
+  ret float %ldexp
+}
+
+define float @ldexp_127(float %x) {
+; CHECK-LABEL: define float @ldexp_127
+; CHECK-SAME: (float [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP:%.*]] = fmul float [[X]], 0x47E0000000000000
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %ldexp = call float @llvm.ldexp.f32.i32(float %x, i32 127)
+  ret float %ldexp
+}
+
+define float @ldexp_128(float %x) {
+; CHECK-LABEL: define float @ldexp_128
+; CHECK-SAME: (float [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP:%.*]] = call float @llvm.ldexp.f32.i32(float [[X]], i32 128)
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %ldexp = call float @llvm.ldexp.f32.i32(float %x, i32 128)
+  ret float %ldexp
+}
+
+define float @ldexp_254(float %x) {
+; CHECK-LABEL: define float @ldexp_254
+; CHECK-SAME: (float [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP:%.*]] = call float @llvm.ldexp.f32.i32(float [[X]], i32 254)
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %ldexp = call float @llvm.ldexp.f32.i32(float %x, i32 254)
+  ret float %ldexp
+}
+
+define float @ldexp_255(float %x) {
+; CHECK-LABEL: define float @ldexp_255
+; CHECK-SAME: (float [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP:%.*]] = call float @llvm.ldexp.f32.i32(float [[X]], i32 255)
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %ldexp = call float @llvm.ldexp.f32.i32(float %x, i32 255)
+  ret float %ldexp
+}
+
+define float @ldexp_256(float %x) {
+; CHECK-LABEL: define float @ldexp_256
+; CHECK-SAME: (float [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP:%.*]] = call float @llvm.ldexp.f32.i32(float [[X]], i32 256)
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %ldexp = call float @llvm.ldexp.f32.i32(float %x, i32 256)
+  ret float %ldexp
+}
+
+define float @ldexp_neg254(float %x) {
+; CHECK-LABEL: define float @ldexp_neg254
+; CHECK-SAME: (float [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP:%.*]] = call float @llvm.ldexp.f32.i32(float [[X]], i32 -254)
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %ldexp = call float @llvm.ldexp.f32.i32(float %x, i32 -254)
+  ret float %ldexp
+}
+
+define float @ldexp_neg255(float %x) {
+; CHECK-LABEL: define float @ldexp_neg255
+; CHECK-SAME: (float [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP:%.*]] = call float @llvm.ldexp.f32.i32(float [[X]], i32 -255)
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %ldexp = call float @llvm.ldexp.f32.i32(float %x, i32 -255)
+  ret float %ldexp
+}
+
+define float @ldexp_neg256(float %x) {
+; CHECK-LABEL: define float @ldexp_neg256
+; CHECK-SAME: (float [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP:%.*]] = call float @llvm.ldexp.f32.i32(float [[X]], i32 -256)
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %ldexp = call float @llvm.ldexp.f32.i32(float %x, i32 -256)
+  ret float %ldexp
+}
+
+define float @ldexp_neg260(float %x) {
+; CHECK-LABEL: define float @ldexp_neg260
+; CHECK-SAME: (float [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP:%.*]] = call float @llvm.ldexp.f32.i32(float [[X]], i32 -260)
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %ldexp = call float @llvm.ldexp.f32.i32(float %x, i32 -260)
+  ret float %ldexp
+}
+
+define <2 x float> @ldexp_3_vector(<2 x float> %x) {
+; CHECK-LABEL: define <2 x float> @ldexp_3_vector
+; CHECK-SAME: (<2 x float> [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP:%.*]] = fmul <2 x float> [[X]], splat (float 8.000000e+00)
+; CHECK-NEXT:    ret <2 x float> [[LDEXP]]
+;
+  %ldexp = call <2 x float> @llvm.ldexp.v2f32.v2i32(<2 x float> %x, <2 x i32> <i32 3, i32 3>)
+  ret <2 x float> %ldexp
+}
+
+define <2 x float> @ldexp_3_undef_vector(<2 x float> %x) {
+; CHECK-LABEL: define <2 x float> @ldexp_3_undef_vector
+; CHECK-SAME: (<2 x float> [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP:%.*]] = call <2 x float> @llvm.ldexp.v2f32.v2i32(<2 x float> [[X]], <2 x i32> <i32 3, i32 poison>)
+; CHECK-NEXT:    ret <2 x float> [[LDEXP]]
+;
+  %ldexp = call <2 x float> @llvm.ldexp.v2f32.v2i32(<2 x float> %x, <2 x i32> <i32 3, i32 poison>)
+  ret <2 x float> %ldexp
+}
+
+define <2 x float> @ldexp_3_4_vector(<2 x float> %x) {
+; CHECK-LABEL: define <2 x float> @ldexp_3_4_vector
+; CHECK-SAME: (<2 x float> [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP:%.*]] = call <2 x float> @llvm.ldexp.v2f32.v2i32(<2 x float> [[X]], <2 x i32> <i32 3, i32 4>)
+; CHECK-NEXT:    ret <2 x float> [[LDEXP]]
+;
+  %ldexp = call <2 x float> @llvm.ldexp.v2f32.v2i32(<2 x float> %x, <2 x i32> <i32 3, i32 4>)
+  ret <2 x float> %ldexp
+}
+
+define float @ldexp_2_flags(float %x) {
+; CHECK-LABEL: define float @ldexp_2_flags
+; CHECK-SAME: (float [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP:%.*]] = fmul nsz contract float [[X]], 4.000000e+00
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %ldexp = call contract nsz float @llvm.ldexp.f32.i32(float %x, i32 2)
+  ret float %ldexp
+}
+
+define float @ldexp_metadata(float %x) {
+; CHECK-LABEL: define float @ldexp_metadata
+; CHECK-SAME: (float [[X:%.*]]) {
+; CHECK-NEXT:    [[LDEXP:%.*]] = fmul float [[X]], 4.000000e+00
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %ldexp = call float @llvm.ldexp.f32.i32(float %x, i32 2), !foo !2
+  ret float %ldexp
+}
+
+define float @ldexp_8_contractable(float %x, float %y) {
+; CHECK-LABEL: define float @ldexp_8_contractable
+; CHECK-SAME: (float [[X:%.*]], float [[Y:%.*]]) {
+; CHECK-NEXT:    [[LDEXP:%.*]] = fmul contract float [[X]], 4.000000e+00
+; CHECK-NEXT:    [[FADD:%.*]] = fadd contract float [[LDEXP]], [[Y]]
+; CHECK-NEXT:    ret float [[FADD]]
+;
+  %ldexp = call contract float @llvm.ldexp.f32.i32(float %x, i32 2)
+  %fadd = fadd contract float %ldexp, %y
+  ret float %fadd
+}
+
+define float @ldexp_f32_mask_select_0(i1 %cond, float %x, i32 %y) {
+; CHECK-LABEL: define float @ldexp_f32_mask_select_0
+; CHECK-SAME: (i1 [[COND:%.*]], float [[X:%.*]], i32 [[Y:%.*]]) {
+; CHECK-NEXT:    [[TMP1:%.*]] = call float @llvm.ldexp.f32.i32(float [[X]], i32 [[Y]])
+; CHECK-NEXT:    [[LDEXP:%.*]] = select i1 [[COND]], float [[TMP1]], float [[X]]
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %select = select i1 %cond, i32 %y, i32 0
+  %ldexp = call float @llvm.ldexp.f32.i32(float %x, i32 %select)
+  ret float %ldexp
+}
+
+define float @ldexp_nnan_f32_mask_select_0(i1 %cond, float %x, i32 %y) {
+; CHECK-LABEL: define float @ldexp_nnan_f32_mask_select_0
+; CHECK-SAME: (i1 [[COND:%.*]], float [[X:%.*]], i32 [[Y:%.*]]) {
+; CHECK-NEXT:    [[TMP1:%.*]] = call nnan float @llvm.ldexp.f32.i32(float [[X]], i32 [[Y]])
+; CHECK-NEXT:    [[LDEXP:%.*]] = select i1 [[COND]], float [[TMP1]], float [[X]]
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %select = select i1 %cond, i32 %y, i32 0
+  %ldexp = call nnan float @llvm.ldexp.f32.i32(float %x, i32 %select)
+  ret float %ldexp
+}
+
+define float @ldexp_flags_f32_mask_select_0(i1 %cond, float %x, i32 %y) {
+; CHECK-LABEL: define float @ldexp_flags_f32_mask_select_0
+; CHECK-SAME: (i1 [[COND:%.*]], float [[X:%.*]], i32 [[Y:%.*]]) {
+; CHECK-NEXT:    [[TMP1:%.*]] = call ninf nsz float @llvm.ldexp.f32.i32(float [[X]], i32 [[Y]])
+; CHECK-NEXT:    [[LDEXP:%.*]] = select i1 [[COND]], float [[TMP1]], float [[X]]
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %select = select i1 %cond, i32 %y, i32 0
+  %ldexp = call nsz ninf float @llvm.ldexp.f32.i32(float %x, i32 %select)
+  ret float %ldexp
+}
+
+define float @ldexp_f32_mask_select_0_swap(i1 %cond, float %x, i32 %y) {
+; CHECK-LABEL: define float @ldexp_f32_mask_select_0_swap
+; CHECK-SAME: (i1 [[COND:%.*]], float [[X:%.*]], i32 [[Y:%.*]]) {
+; CHECK-NEXT:    [[TMP1:%.*]] = call float @llvm.ldexp.f32.i32(float [[X]], i32 [[Y]])
+; CHECK-NEXT:    [[LDEXP:%.*]] = select i1 [[COND]], float [[X]], float [[TMP1]]
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %select = select i1 %cond, i32 0, i32 %y
+  %ldexp = call float @llvm.ldexp.f32.i32(float %x, i32 %select)
+  ret float %ldexp
+}
+
+define float @ldexp_f32_mask_select_1(i1 %cond, float %x, i32 %y) {
+; CHECK-LABEL: define float @ldexp_f32_mask_select_1
+; CHECK-SAME: (i1 [[COND:%.*]], float [[X:%.*]], i32 [[Y:%.*]]) {
+; CHECK-NEXT:    [[SELECT:%.*]] = select i1 [[COND]], i32 [[Y]], i32 1
+; CHECK-NEXT:    [[LDEXP:%.*]] = call float @llvm.ldexp.f32.i32(float [[X]], i32 [[SELECT]])
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %select = select i1 %cond, i32 %y, i32 1
+  %ldexp = call float @llvm.ldexp.f32.i32(float %x, i32 %select)
+  ret float %ldexp
+}
+
+define float @ldexp_f32_mask_select_0_multi_use(i1 %cond, float %x, i32 %y, ptr %ptr) {
+; CHECK-LABEL: define float @ldexp_f32_mask_select_0_multi_use
+; CHECK-SAME: (i1 [[COND:%.*]], float [[X:%.*]], i32 [[Y:%.*]], ptr [[PTR:%.*]]) {
+; CHECK-NEXT:    [[SELECT:%.*]] = select i1 [[COND]], i32 [[Y]], i32 0
+; CHECK-NEXT:    store i32 [[SELECT]], ptr [[PTR]], align 4
+; CHECK-NEXT:    [[LDEXP:%.*]] = call float @llvm.ldexp.f32.i32(float [[X]], i32 [[SELECT]])
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %select = select i1 %cond, i32 %y, i32 0
+  store i32 %select, ptr %ptr
+  %ldexp = call float @llvm.ldexp.f32.i32(float %x, i32 %select)
+  ret float %ldexp
+}
+
+define float @ldexp_f32_mask_select_0_swap_multi_use(i1 %cond, float %x, i32 %y, ptr %ptr) {
+; CHECK-LABEL: define float @ldexp_f32_mask_select_0_swap_multi_use
+; CHECK-SAME: (i1 [[COND:%.*]], float [[X:%.*]], i32 [[Y:%.*]], ptr [[PTR:%.*]]) {
+; CHECK-NEXT:    [[SELECT:%.*]] = select i1 [[COND]], i32 0, i32 [[Y]]
+; CHECK-NEXT:    store i32 [[SELECT]], ptr [[PTR]], align 4
+; CHECK-NEXT:    [[LDEXP:%.*]] = call float @llvm.ldexp.f32.i32(float [[X]], i32 [[SELECT]])
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %select = select i1 %cond, i32 0, i32 %y
+  store i32 %select, ptr %ptr
+  %ldexp = call float @llvm.ldexp.f32.i32(float %x, i32 %select)
+  ret float %ldexp
+}
+
+define float @ldexp_f32_mask_select_0_strictfp(i1 %cond, float %x, i32 %y) #0 {
+; CHECK-LABEL: define float @ldexp_f32_mask_select_0_strictfp
+; CHECK-SAME: (i1 [[COND:%.*]], float [[X:%.*]], i32 [[Y:%.*]]) #[[ATTR1:[0-9]+]] {
+; CHECK-NEXT:    [[SELECT:%.*]] = select i1 [[COND]], i32 [[Y]], i32 0
+; CHECK-NEXT:    [[LDEXP:%.*]] = call float @llvm.experimental.constrained.ldexp.f32.i32(float [[X]], i32 [[SELECT]], metadata !"round.dynamic", metadata !"fpexcept.strict")
+; CHECK-NEXT:    ret float [[LDEXP]]
+;
+  %select = select i1 %cond, i32 %y, i32 0
+  %ldexp = call float @llvm.experimental.constrained.ldexp.f32.i32(float %x, i32 %select, metadata !"round.dynamic", metadata !"fpexcept.strict")
+  ret float %ldexp
+}
+
+define <2 x float> @ldexp_v2f32_mask_select_0(<2 x i1> %cond, <2 x float> %x, <2 x i32> %y) {
+; CHECK-LABEL: define <2 x float> @ldexp_v2f32_mask_select_0
+; CHECK-SAME: (<2 x i1> [[COND:%.*]], <2 x float> [[X:%.*]], <2 x i32> [[Y:%.*]]) {
+; CHECK-NEXT:    [[TMP1:%.*]] = call nnan nsz <2 x float> @llvm.ldexp.v2f32.v2i32(<2 x float> [[X]], <2 x i32> [[Y]])
+; CHECK-NEXT:    [[LDEXP:%.*]] = select <2 x i1> [[COND]], <2 x float> [[TMP1]], <2 x float> [[X]]
+; CHECK-NEXT:    ret <2 x float> [[LDEXP]]
+;
+  %select = select <2 x i1> %cond, <2 x i32> %y, <2 x i32> zeroinitializer
+  %ldexp = call nsz nnan <2 x float> @llvm.ldexp.f32.v2i32(<2 x float> %x, <2 x i32> %select)
+  ret <2 x float> %ldexp
+}
+
+define <2 x float> @ldexp_v2f32_mask_select_0_swap(<2 x i1> %cond, <2 x float> %x, <2 x i32> %y) {
+; CHECK-LABEL: define <2 x float> @ldexp_v2f32_mask_select_0_swap
+; CHECK-SAME: (<2 x i1> [[COND:%.*]], <2 x float> [[X:%.*]], <2 x i32> [[Y:%.*]]) {
+; CHECK-NEXT:    [[TMP1:%.*]] = call nnan nsz <2 x float> @llvm.ldexp.v2f32.v2i32(<2 x float> [[X]], <2 x i32> [[Y]])
+; CHECK-NEXT:    [[LDEXP:%.*]] = select <2 x i1> [[COND]], <2 x float> [[X]], <2 x float> [[TMP1]]
+; CHECK-NEXT:    ret <2 x float> [[LDEXP]]
+;
+  %select = select <2 x i1> %cond, <2 x i32> zeroinitializer, <2 x i32> %y
+  %ldexp = call nsz nnan <2 x float> @llvm.ldexp.f32.v2i32(<2 x float> %x, <2 x i32> %select)
+  ret <2 x float> %ldexp
+}
+
+attributes #0 = { strictfp }
+
 !0 = !{i32 -127, i32 0}
 !1 = !{i32 0, i32 127}
+!2 = !{}

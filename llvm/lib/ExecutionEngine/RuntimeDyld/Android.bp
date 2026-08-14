@@ -1,7 +1,7 @@
 cc_library_static {
-    name: "libLLVM17RuntimeDyld",
+    name: "libLLVM22RuntimeDyld",
     defaults: [
-        "llvm17-lib-defaults",
+        "llvm22-lib-defaults",
     ],
     srcs: [
         "*.cpp",

@@ -1,10 +1,10 @@
 cc_library_static {
-    name: "libLLVM17Support",
+    name: "libLLVM22Support",
     vendor_available: true,
-    defaults: ["llvm17-defaults-no-generated-headers"],
+    defaults: ["llvm22-defaults-no-generated-headers"],
     target: {
-        // llvm17-defaults turns off host builds by default, turn it back on for
-        // modules that are used to build llvm17-tblgen
+        // llvm22-defaults turns off host builds by default, turn it back on for
+        // modules that are used to build llvm22-tblgen
         host: {
             enabled: true,
         },
@@ -19,6 +19,9 @@ cc_library_static {
         "BLAKE3/blake3_dispatch.c",
         "BLAKE3/blake3_neon.c",
         "BLAKE3/blake3_portable.c",
+    ],
+    include_dirs: [
+        "external/llvm-project/third-party/siphash/include",
     ],
     arch: {
         x86: {
@@ -43,10 +46,10 @@ cc_library_static {
 cc_library_static {
     name: "blake3_avx2",
     vendor_available: true,
-    defaults: ["llvm17-defaults-no-generated-headers"],
+    defaults: ["llvm22-defaults-no-generated-headers"],
     target: {
-        // llvm17-defaults turns off host builds by default, turn it back on for
-        // modules that are used to build llvm17-tblgen
+        // llvm22-defaults turns off host builds by default, turn it back on for
+        // modules that are used to build llvm22-tblgen
         host: {
             enabled: true,
         },
@@ -69,10 +72,10 @@ cc_library_static {
 cc_library_static {
     name: "blake3_avx512",
     vendor_available: true,
-    defaults: ["llvm17-defaults-no-generated-headers"],
+    defaults: ["llvm22-defaults-no-generated-headers"],
     target: {
-        // llvm17-defaults turns off host builds by default, turn it back on for
-        // modules that are used to build llvm17-tblgen
+        // llvm22-defaults turns off host builds by default, turn it back on for
+        // modules that are used to build llvm22-tblgen
         host: {
             enabled: true,
         },
@@ -96,10 +99,10 @@ cc_library_static {
 cc_library_static {
     name: "blake3_sse2",
     vendor_available: true,
-    defaults: ["llvm17-defaults-no-generated-headers"],
+    defaults: ["llvm22-defaults-no-generated-headers"],
     target: {
-        // llvm17-defaults turns off host builds by default, turn it back on for
-        // modules that are used to build llvm17-tblgen
+        // llvm22-defaults turns off host builds by default, turn it back on for
+        // modules that are used to build llvm22-tblgen
         host: {
             enabled: true,
         },
@@ -122,10 +125,10 @@ cc_library_static {
 cc_library_static {
     name: "blake3_sse41",
     vendor_available: true,
-    defaults: ["llvm17-defaults-no-generated-headers"],
+    defaults: ["llvm22-defaults-no-generated-headers"],
     target: {
-        // llvm17-defaults turns off host builds by default, turn it back on for
-        // modules that are used to build llvm17-tblgen
+        // llvm22-defaults turns off host builds by default, turn it back on for
+        // modules that are used to build llvm22-tblgen
         host: {
             enabled: true,
         },

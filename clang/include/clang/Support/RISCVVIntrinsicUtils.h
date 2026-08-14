@@ -58,6 +58,13 @@ enum class VectorTypeModifier : uint8_t {
   SFixedLog2LMUL1,
   SFixedLog2LMUL2,
   SFixedLog2LMUL3,
+  SEFixedLog2LMULN3,
+  SEFixedLog2LMULN2,
+  SEFixedLog2LMULN1,
+  SEFixedLog2LMUL0,
+  SEFixedLog2LMUL1,
+  SEFixedLog2LMUL2,
+  SEFixedLog2LMUL3,
   Tuple2,
   Tuple3,
   Tuple4,
@@ -78,6 +85,7 @@ enum class BaseTypeModifier : uint8_t {
   Ptrdiff,
   UnsignedLong,
   SignedLong,
+  Float32
 };
 
 // Modifier for type, used for both scalar and vector types.
@@ -89,13 +97,14 @@ enum class TypeModifier : uint8_t {
   UnsignedInteger = 1 << 3,
   SignedInteger = 1 << 4,
   Float = 1 << 5,
+  BFloat = 1 << 6,
   // LMUL1 should be kind of VectorTypeModifier, but that might come with
   // Widening2XVector for widening reduction.
   // However that might require VectorTypeModifier become bitmask rather than
   // simple enum, so we decide keek LMUL1 in TypeModifier for code size
   // optimization of clang binary size.
-  LMUL1 = 1 << 6,
-  MaxOffset = 6,
+  LMUL1 = 1 << 7,
+  MaxOffset = 7,
   LLVM_MARK_AS_BITMASK_ENUM(LMUL1),
 };
 
@@ -193,17 +202,20 @@ llvm::SmallVector<PrototypeDescriptor>
 parsePrototypes(llvm::StringRef Prototypes);
 
 // Basic type of vector type.
-enum class BasicType : uint8_t {
+enum class BasicType : uint16_t {
   Unknown = 0,
   Int8 = 1 << 0,
   Int16 = 1 << 1,
   Int32 = 1 << 2,
   Int64 = 1 << 3,
-  Float16 = 1 << 4,
-  Float32 = 1 << 5,
-  Float64 = 1 << 6,
-  MaxOffset = 6,
-  LLVM_MARK_AS_BITMASK_ENUM(Float64),
+  BFloat16 = 1 << 4,
+  Float16 = 1 << 5,
+  Float32 = 1 << 6,
+  Float64 = 1 << 7,
+  F8E4M3 = 1 << 8,
+  F8E5M2 = 1 << 9,
+  MaxOffset = 9,
+  LLVM_MARK_AS_BITMASK_ENUM(F8E5M2),
 };
 
 // Type of vector type.
@@ -217,7 +229,11 @@ enum ScalarTypeKind : uint8_t {
   SignedInteger,
   UnsignedInteger,
   Float,
+  BFloat,
+  FloatE4M3,
+  FloatE5M2,
   Invalid,
+  Undefined,
 };
 
 // Exponential LMUL
@@ -240,7 +256,7 @@ class RVVType {
   friend class RVVTypeCache;
 
   BasicType BT;
-  ScalarTypeKind ScalarType = Invalid;
+  ScalarTypeKind ScalarType = Undefined;
   LMULType LMUL;
   bool IsPointer = false;
   // IsConstant indices are "int", but have the constant expression.
@@ -258,7 +274,7 @@ class RVVType {
   std::string Str;
   std::string ShortStr;
 
-  enum class FixedLMULType { LargerThan, SmallerThan };
+  enum class FixedLMULType { LargerThan, SmallerThan, SmallerOrEqual };
 
   RVVType(BasicType BT, int Log2LMUL, const PrototypeDescriptor &Profile);
 
@@ -291,6 +307,7 @@ public:
     return isVector() && ElementBitwidth == Width;
   }
   bool isFloat() const { return ScalarType == ScalarTypeKind::Float; }
+  bool isBFloat() const { return ScalarType == ScalarTypeKind::BFloat; }
   bool isSignedInteger() const {
     return ScalarType == ScalarTypeKind::SignedInteger;
   }
@@ -363,6 +380,8 @@ enum PolicyScheme : uint8_t {
   HasPolicyOperand,
 };
 
+llvm::raw_ostream &operator<<(llvm::raw_ostream &OS, enum PolicyScheme PS);
+
 // TODO refactor RVVIntrinsic class design after support all intrinsic
 // combination. This represents an instantiation of an intrinsic with a
 // particular type and prototype
@@ -387,6 +406,7 @@ private:
   std::vector<int64_t> IntrinsicTypes;
   unsigned NF = 1;
   Policy PolicyAttrs;
+  unsigned TWiden = 0;
 
 public:
   RVVIntrinsic(llvm::StringRef Name, llvm::StringRef Suffix,
@@ -395,16 +415,14 @@ public:
                bool HasVL, PolicyScheme Scheme, bool SupportOverloading,
                bool HasBuiltinAlias, llvm::StringRef ManualCodegen,
                const RVVTypes &Types,
-               const std::vector<int64_t> &IntrinsicTypes,
-               const std::vector<llvm::StringRef> &RequiredFeatures,
-               unsigned NF, Policy PolicyAttrs, bool HasFRMRoundModeOp);
+               const std::vector<int64_t> &IntrinsicTypes, unsigned NF,
+               Policy PolicyAttrs, bool HasFRMRoundModeOp, unsigned TWiden,
+               bool AltFmt);
   ~RVVIntrinsic() = default;
 
   RVVTypePtr getOutputType() const { return OutputType; }
   const RVVTypes &getInputTypes() const { return InputTypes; }
   llvm::StringRef getBuiltinName() const { return BuiltinName; }
-  llvm::StringRef getName() const { return Name; }
-  llvm::StringRef getOverloadedName() const { return OverloadedName; }
   bool hasMaskedOffOperand() const { return HasMaskedOffOperand; }
   bool hasVL() const { return HasVL; }
   bool hasPolicy() const { return Scheme != PolicyScheme::SchemeNone; }
@@ -418,10 +436,12 @@ public:
   bool hasBuiltinAlias() const { return HasBuiltinAlias; }
   bool hasManualCodegen() const { return !ManualCodegen.empty(); }
   bool isMasked() const { return IsMasked; }
+  llvm::StringRef getOverloadedName() const { return OverloadedName; }
   llvm::StringRef getIRName() const { return IRName; }
   llvm::StringRef getManualCodegen() const { return ManualCodegen; }
   PolicyScheme getPolicyScheme() const { return Scheme; }
   unsigned getNF() const { return NF; }
+  unsigned getTWiden() const { return TWiden; }
   const std::vector<int64_t> &getIntrinsicTypes() const {
     return IntrinsicTypes;
   }
@@ -467,17 +487,8 @@ public:
   static void updateNamesAndPolicy(bool IsMasked, bool HasPolicy,
                                    std::string &Name, std::string &BuiltinName,
                                    std::string &OverloadedName,
-                                   Policy &PolicyAttrs, bool HasFRMRoundModeOp);
-};
-
-// RVVRequire should be sync'ed with target features, but only
-// required features used in riscv_vector.td.
-enum RVVRequire : uint8_t {
-  RVV_REQ_None = 0,
-  RVV_REQ_RV64 = 1 << 0,
-  RVV_REQ_Xsfvcp = 1 << 1,
-
-  LLVM_MARK_AS_BITMASK_ENUM(RVV_REQ_Xsfvcp)
+                                   Policy &PolicyAttrs, bool HasFRMRoundModeOp,
+                                   bool AltFmt);
 };
 
 // Raw RVV intrinsic info, used to expand later.
@@ -489,6 +500,9 @@ struct RVVIntrinsicRecord {
   // Overloaded intrinsic name, could be empty if it can be computed from Name.
   // e.g. vadd
   const char *OverloadedName;
+
+  // Required target features for this intrinsic.
+  const char *RequiredExtensions;
 
   // Prototype for this intrinsic, index of RVVSignatureTable.
   uint16_t PrototypeIndex;
@@ -508,11 +522,8 @@ struct RVVIntrinsicRecord {
   // Length of overloaded intrinsic suffix.
   uint8_t OverloadedSuffixSize;
 
-  // Required target features for this intrinsic.
-  uint8_t RequiredExtensions;
-
   // Supported type, mask of BasicType.
-  uint8_t TypeRangeMask;
+  uint16_t TypeRangeMask;
 
   // Supported LMUL.
   uint8_t Log2LMULMask;
@@ -526,8 +537,11 @@ struct RVVIntrinsicRecord {
   bool HasTailPolicy : 1;
   bool HasMaskPolicy : 1;
   bool HasFRMRoundModeOp : 1;
+  bool AltFmt : 1;
   bool IsTuple : 1;
+  LLVM_PREFERRED_TYPE(PolicyScheme)
   uint8_t UnMaskedPolicyScheme : 2;
+  LLVM_PREFERRED_TYPE(PolicyScheme)
   uint8_t MaskedPolicyScheme : 2;
 };
 

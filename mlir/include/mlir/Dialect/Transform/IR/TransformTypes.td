@@ -10,7 +10,7 @@
 #define MLIR_DIALECT_TRANSFORM_IR_TRANSFORMTYPES
 
 include "mlir/IR/AttrTypeBase.td"
-include "mlir/Dialect/Transform/IR/TransformInterfaces.td"
+include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.td"
 include "mlir/Dialect/Transform/IR/TransformDialect.td"
 
 def Transform_AffineMapParamType : TypeDef<Transform_Dialect, "AffineMapParam",
@@ -55,6 +55,16 @@ def Transform_OperationType : TypeDef<Transform_Dialect, "Operation",
   let assemblyFormat = "`<` $operation_name `>`";
 }
 
+def Transform_AnyParamType : TypeDef<Transform_Dialect, "AnyParam",
+    [DeclareTypeInterfaceMethods<TransformParamTypeInterface>]> {
+  let description = [{
+    Transform IR value that can be associated with a list of parameters
+    of any type.
+  }];
+  let mnemonic = "any_param";
+  let assemblyFormat = "";
+}
+
 def Transform_ParamType : TypeDef<Transform_Dialect, "Param",
     [DeclareTypeInterfaceMethods<TransformParamTypeInterface>]> {
   let description = [{
@@ -92,5 +102,10 @@ def TransformAnyHandle : Type<
     Or<[TransformHandleTypeInterface.predicate,
         TransformValueHandleTypeInterface.predicate]>,
     "transform operation or value handle">;
+
+def TransformAnyParamTypeOrAnyHandle : Type<
+    Or<[TransformHandleTypeInterface.predicate,
+        TransformParamTypeInterface.predicate]>,
+    "transform any param type or any handle type">;
 
 #endif  // MLIR_DIALECT_TRANSFORM_IR_TRANSFORMTYPES

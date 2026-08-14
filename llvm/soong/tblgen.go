@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package llvm17
+package llvm22
 
 import (
 	"path/filepath"
@@ -25,20 +25,20 @@ import (
 )
 
 func init() {
-	android.RegisterModuleType("llvm17_tblgen", llvm17TblgenFactory)
+	android.RegisterModuleType("llvm22_tblgen", llvm22TblgenFactory)
 }
 
 var (
-	pctx = android.NewPackageContext("android/soong/llvm17")
+	pctx = android.NewPackageContext("android/soong/llvm22")
 
-	llvm17Tblgen = pctx.HostBinToolVariable("llvm17Tblgen", "llvm17-tblgen")
+	llvm22Tblgen = pctx.HostBinToolVariable("llvm22Tblgen", "llvm22-tblgen")
 
-	tblgenRule17 = pctx.StaticRule("tblgenRule17", blueprint.RuleParams{
+	tblgenRule22 = pctx.StaticRule("tblgenRule22", blueprint.RuleParams{
 		Depfile:     "${out}.d",
 		Deps:        blueprint.DepsGCC,
-		Command:     "${llvm17Tblgen} ${includes} ${generator} -d ${depfile} -o ${out} ${in}",
-		CommandDeps: []string{"${llvm17Tblgen}"},
-		Description: "LLVM17 TableGen $in => $out",
+		Command:     "${llvm22Tblgen} ${includes} ${generator} -d ${depfile} -o ${out} ${in}",
+		CommandDeps: []string{"${llvm22Tblgen}"},
+		Description: "LLVM22 TableGen $in => $out",
 		Restat:      true,
 	}, "includes", "depfile", "generator")
 )
@@ -74,7 +74,7 @@ func (t *tblgen) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		generator := outToGenerator(ctx, o)
 
 		ctx.ModuleBuild(pctx, android.ModuleBuildParams{
-			Rule:   tblgenRule17,
+			Rule:   tblgenRule22,
 			Input:  in,
 			Output: out,
 			Args: map[string]string{
@@ -109,8 +109,14 @@ func outToGenerator(ctx android.ModuleContext, out string) string {
 		return "-gen-pseudo-lowering"
 	case strings.HasSuffix(out, "GenDAGISel.inc"):
 		return "-gen-dag-isel"
+	case strings.HasSuffix(out, "AArch64GenDisassemblerTables.inc"):
+		return "-gen-disassembler -ignore-non-decodable-operands -ignore-fully-defined-operands"
+	case strings.HasSuffix(out, "AMDGPUGenDisassemblerTables.inc"):
+		return "-gen-disassembler --specialize-decoders-per-bitwidth -ignore-non-decodable-operands -ignore-fully-defined-operands"
+	case strings.HasSuffix(out, "RISCVGenDisassemblerTables.inc"):
+		return "-gen-disassembler --specialize-decoders-per-bitwidth -ignore-non-decodable-operands"
 	case strings.HasSuffix(out, "GenDisassemblerTables.inc"):
-		return "-gen-disassembler"
+		return "-gen-disassembler -ignore-non-decodable-operands"
 	case strings.HasSuffix(out, "GenSearchableTables.inc"):
 		return "-gen-searchable-tables"
 	case strings.HasSuffix(out, "GenSystemOperands.inc"):
@@ -139,30 +145,38 @@ func outToGenerator(ctx android.ModuleContext, out string) string {
 		return "-gen-dfa-packetizer"
 	case strings.HasSuffix(out, "GenRegisterBank.inc"):
 		return "-gen-register-bank"
+	case strings.HasSuffix(out, "GenSDNodeInfo.inc"):
+		return "-gen-sd-node-info"
 	case strings.HasSuffix(out, "AArch64GenO0PreLegalizeGICombiner.inc"):
-		return "-gen-global-isel-combiner-matchtable -combiners=\"AArch64O0PreLegalizerCombiner\""
+		return "-gen-global-isel-combiner -combiners=\"AArch64O0PreLegalizerCombiner\""
 	case strings.HasSuffix(out, "AArch64GenPreLegalizeGICombiner.inc"):
-		return "--gen-global-isel-combiner-matchtable -combiners=\"AArch64PreLegalizerCombiner\""
+		return "--gen-global-isel-combiner -combiners=\"AArch64PreLegalizerCombiner\""
 	case strings.HasSuffix(out, "AArch64GenPostLegalizeGICombiner.inc"):
-		return "--gen-global-isel-combiner-matchtable -combiners=\"AArch64PostLegalizerCombiner\""
+		return "--gen-global-isel-combiner -combiners=\"AArch64PostLegalizerCombiner\""
 	case strings.HasSuffix(out, "AArch64GenPostLegalizeGILowering.inc"):
-		return "-gen-global-isel-combiner-matchtable -combiners=\"AArch64PostLegalizerLowering\""
+		return "-gen-global-isel-combiner -combiners=\"AArch64PostLegalizerLowering\""
 	case strings.HasSuffix(out, "AMDGPUGenPreLegalizeGICombiner.inc"):
-		return "-gen-global-isel-combiner-matchtable -combiners=\"AMDGPUPreLegalizerCombiner\""
+		return "-gen-global-isel-combiner -combiners=\"AMDGPUPreLegalizerCombiner\""
 	case strings.HasSuffix(out, "AMDGPUGenPostLegalizeGICombiner.inc"):
-		return "-gen-global-isel-combiner-matchtable -combiners=\"AMDGPUPostLegalizerCombiner\""
+		return "-gen-global-isel-combiner -combiners=\"AMDGPUPostLegalizerCombiner\""
 	case strings.HasSuffix(out, "AMDGPUGenRegBankGICombiner.inc"):
-		return "-gen-global-isel-combiner-matchtable -combiners=\"AMDGPURegBankCombiner\""
+		return "-gen-global-isel-combiner -combiners=\"AMDGPURegBankCombiner\""
 	case strings.HasSuffix(out, "GenGlobalISel.inc"):
 		return "-gen-global-isel"
 	case strings.HasSuffix(out, "RISCVTargetParserDef.inc"):
 		return "-gen-riscv-target-def"
-	case strings.HasSuffix(out, "X86GenEVEX2VEXTables.inc"):
-		return "-gen-x86-EVEX2VEX-tables"
+	case strings.HasSuffix(out, "TargetParserDef.inc"):
+		return "-gen-arm-target-def"
+	case strings.HasSuffix(out, "GenTargetFeatures.inc"):
+		return "-gen-target-features"
+	case strings.HasSuffix(out, "X86GenInstrMapping.inc"):
+		return "-gen-x86-instr-mapping"
 	case strings.HasSuffix(out, "X86GenMnemonicTables.inc"):
 		return "-gen-x86-mnemonic-tables -asmwriternum=1"
 	case strings.HasSuffix(out, "X86GenFoldTables.inc"):
 		return "-gen-x86-fold-tables -asmwriternum=1"
+	case strings.HasSuffix(out, "X86GenPreLegalizeGICombiner.inc"):
+		return "-gen-global-isel-combiner -combiners=\"X86PreLegalizerCombiner\""
 	case out == "Attributes.inc", out == "AttributesCompatFunc.inc":
 		return "-gen-attrs"
 	case out == "IntrinsicEnums.inc":
@@ -181,6 +195,8 @@ func outToGenerator(ctx android.ModuleContext, out string) string {
 		return "-gen-intrinsic-enums -intrinsic-prefix=dx"
 	case out == "IntrinsicsHexagon.h":
 		return "-gen-intrinsic-enums -intrinsic-prefix=hexagon"
+	case out == "IntrinsicsLoongArch.h":
+		return "-gen-intrinsic-enums -intrinsic-prefix=loongarch"
 	case out == "IntrinsicsMips.h":
 		return "-gen-intrinsic-enums -intrinsic-prefix=mips"
 	case out == "IntrinsicsNVPTX.h":
@@ -193,6 +209,8 @@ func outToGenerator(ctx android.ModuleContext, out string) string {
 		return "-gen-intrinsic-enums -intrinsic-prefix=riscv"
 	case out == "IntrinsicsS390.h":
 		return "-gen-intrinsic-enums -intrinsic-prefix=s390"
+	case out == "IntrinsicsSPIRV.h":
+		return "-gen-intrinsic-enums -intrinsic-prefix=spv"
 	case out == "IntrinsicsWebAssembly.h":
 		return "-gen-intrinsic-enums -intrinsic-prefix=wasm"
 	case out == "IntrinsicsX86.h":
@@ -230,7 +248,7 @@ func (t *tblgen) GeneratedDeps() android.Paths {
 	return t.generatedHeaders
 }
 
-func llvm17TblgenFactory() android.Module {
+func llvm22TblgenFactory() android.Module {
 	t := &tblgen{}
 	t.AddProperties(&t.properties)
 	android.InitAndroidModule(t)

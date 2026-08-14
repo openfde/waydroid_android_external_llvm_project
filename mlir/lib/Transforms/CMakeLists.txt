@@ -2,15 +2,18 @@ add_subdirectory(Utils)
 
 add_mlir_library(MLIRTransforms
   Canonicalizer.cpp
+  CompositePass.cpp
   ControlFlowSink.cpp
   CSE.cpp
   GenerateRuntimeVerification.cpp
-  Inliner.cpp
+  BubbleDownMemorySpaceCasts.cpp
+  InlinerPass.cpp
   LocationSnapshot.cpp
   LoopInvariantCodeMotion.cpp
   Mem2Reg.cpp
   OpStats.cpp
   PrintIR.cpp
+  RemoveDeadValues.cpp
   SCCP.cpp
   SROA.cpp
   StripDebugInfo.cpp
@@ -24,15 +27,18 @@ add_mlir_library(MLIRTransforms
 
   DEPENDS
   MLIRTransformsPassIncGen
+  MLIRTransformsDialectInterfaceIncGen
 
   LINK_LIBS PUBLIC
   MLIRAnalysis
-  MLIRCopyOpInterface
+  MLIRFunctionInterfaces
   MLIRLoopLikeInterface
+  MLIRMemOpInterfaces
   MLIRMemorySlotInterfaces
   MLIRPass
   MLIRRuntimeVerifiableOpInterface
   MLIRSideEffectInterfaces
   MLIRSupport
   MLIRTransformUtils
+  MLIRUBDialect
   )

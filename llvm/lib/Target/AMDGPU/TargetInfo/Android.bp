@@ -1,8 +1,8 @@
 cc_library_static {
-    name: "libLLVM17AMDGPUInfo",
+    name: "libLLVM22AMDGPUInfo",
     defaults: [
-        "llvm17-lib-defaults",
-        "llvm17-amdgpu-defaults",
+        "llvm22-lib-defaults",
+        "llvm22-amdgpu-defaults",
     ],
     srcs: ["*.cpp"],
 }

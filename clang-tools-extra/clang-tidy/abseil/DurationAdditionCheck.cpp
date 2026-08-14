@@ -1,4 +1,4 @@
-//===--- DurationAdditionCheck.cpp - clang-tidy----------------------------===//
+//===----------------------------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -21,7 +21,7 @@ void DurationAdditionCheck::registerMatchers(MatchFinder *Finder) {
   Finder->addMatcher(
       binaryOperator(hasOperatorName("+"),
                      hasEitherOperand(expr(ignoringParenImpCasts(
-                         callExpr(callee(functionDecl(TimeConversionFunction())
+                         callExpr(callee(functionDecl(timeConversionFunction())
                                              .bind("function_decl")))
                              .bind("call")))))
           .bind("binop"),
@@ -29,9 +29,8 @@ void DurationAdditionCheck::registerMatchers(MatchFinder *Finder) {
 }
 
 void DurationAdditionCheck::check(const MatchFinder::MatchResult &Result) {
-  const BinaryOperator *Binop =
-      Result.Nodes.getNodeAs<clang::BinaryOperator>("binop");
-  const CallExpr *Call = Result.Nodes.getNodeAs<clang::CallExpr>("call");
+  const auto *Binop = Result.Nodes.getNodeAs<clang::BinaryOperator>("binop");
+  const auto *Call = Result.Nodes.getNodeAs<clang::CallExpr>("call");
 
   // Don't try to replace things inside of macro definitions.
   if (Binop->getExprLoc().isMacroID() || Binop->getExprLoc().isInvalid())
@@ -42,7 +41,7 @@ void DurationAdditionCheck::check(const MatchFinder::MatchResult &Result) {
   if (!Scale)
     return;
 
-  llvm::StringRef TimeFactory = getTimeInverseForScale(*Scale);
+  const llvm::StringRef TimeFactory = getTimeInverseForScale(*Scale);
 
   FixItHint Hint;
   if (Call == Binop->getLHS()->IgnoreParenImpCasts()) {

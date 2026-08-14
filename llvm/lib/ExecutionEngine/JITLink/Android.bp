@@ -1,14 +1,14 @@
 cc_library_static {
-    name: "libLLVM17JITLink",
+    name: "libLLVM22JITLink",
     defaults: [
-        "llvm17-lib-defaults",
+        "llvm22-lib-defaults",
     ],
-    generated_headers: ["llvm17-gen-jitlink"],
+    generated_headers: ["llvm22-gen-jitlink"],
     srcs: ["*.cpp"],
 }
 
-llvm17_tblgen {
-    name: "llvm17-gen-jitlink",
+llvm22_tblgen {
+    name: "llvm22-gen-jitlink",
     in: "COFFOptions.td",
     outs: [
         "COFFOptions.inc",

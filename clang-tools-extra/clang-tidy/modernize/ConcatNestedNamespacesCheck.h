@@ -1,4 +1,4 @@
-//===--- ConcatNestedNamespacesCheck.h - clang-tidy--------------*- C++ -*-===//
+//===----------------------------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -45,8 +45,7 @@ public:
 private:
   using NamespaceContextVec = llvm::SmallVector<NS, 6>;
 
-  void reportDiagnostic(const SourceManager &Sources,
-                        const LangOptions &LangOpts);
+  void reportDiagnostic(const SourceManager &SM, const LangOptions &LangOpts);
   NamespaceContextVec Namespaces;
 };
 } // namespace clang::tidy::modernize
